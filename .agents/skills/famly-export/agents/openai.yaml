@@ -1,7 +1,7 @@
 interface:
   display_name: "Famly Export"
-  short_description: "Export Famly posts and original photos"
-  default_prompt: "Use $famly-export to export the signed-in Famly Home feed and original photos into this workspace."
+  short_description: "Export Famly Home, Messages, and original media"
+  default_prompt: "Use $famly-export to export the complete signed-in Famly Home feed, original media, and all active and archived Messages with a private offline viewer."
 dependencies:
   tools:
     - type: "mcp"

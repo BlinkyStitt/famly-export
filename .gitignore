@@ -1,7 +1,11 @@
 # Private Famly export output. Never commit these files.
 /metadata/
 /photos/
+/videos/
+/files/
+/messages/
 *.part
+*.har
 
 # Local operating-system and tool caches.
 /.DS_Store

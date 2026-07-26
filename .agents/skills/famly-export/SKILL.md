@@ -1,99 +1,180 @@
 ---
 name: famly-export
-description: Export a signed-in Famly Home feed and download its original post photos for a private offline backup through Chrome DevTools MCP. Use when a user asks to back up, archive, download, or verify Famly posts and photos from their existing Chrome session without sharing a password. Covers infinite-scroll capture, post and image manifests, expiring image URLs, full-resolution downloads, and completeness validation; excludes Famly Messages unless the user separately requests them.
+description: Export a signed-in Famly Home feed and complete active and archived Messages history for a private offline backup through the dedicated famly-chrome Chrome DevTools MCP server. Captures response bodies without request credentials, downloads original photos, videos, files, and Famly-hosted message attachments, validates media, and builds lossless JSON plus a static offline message viewer.
 ---
 
 # Famly Export
 
-Export only data the user is authorized to access. Treat all output as private.
-Never ask for or inspect the user's Famly password, cookies, local storage,
-session store, or browser profile files.
+Export only data the user is authorized to access. Treat all captured response
+bodies, JSON, HTML, and media as private. Never commit or upload private export
+output.
+
+Never ask for or inspect the user's Famly password, request headers, cookies,
+local storage, session store, access tokens, or browser profile files.
+
+> **Warning:** Exporting Messages opens each conversation and may mark unread
+> conversations as read. The exporter records the initial unread count but
+> does not restore unread state.
+
+State that warning prominently before any browser automation, and repeat it
+immediately before opening Messages.
 
 ## Required control surface
 
-Use the Chrome DevTools MCP server named `famly-chrome`. It must be configured
-with `--autoConnect` so it attaches to the user's existing Chrome profile.
-Never substitute the in-app Browser, a dedicated automation profile, a saved
-page, Playwright, or direct profile-file access.
+Use only the Chrome DevTools MCP server named `famly-chrome`. It must attach to
+the user's existing signed-in Chrome profile with `--autoConnect`. Never
+substitute the in-app Browser, Playwright, a dedicated automation profile,
+saved pages, or direct browser-profile access.
 
-If the server is unavailable, stop and ask the user to complete the setup in
-the repository `README.md`. If the connected profile lacks an authenticated
-Famly Home tab, ask the user to sign in there themselves and tell you when it
-is ready.
+The exact URL below is prohibited:
+
+```text
+https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch
+```
+
+Never navigate to, fetch, probe, or otherwise load it. The required capture
+hook blocks Fetch and XHR attempts locally before the network request.
+
+If `famly-chrome` is unavailable, stop and ask the user to complete the setup
+in the repository `README.md`. If the connected profile is not signed in to
+Famly, ask the user to sign in themselves and open Home.
 
 Before browser work, read
-[`references/devtools-workflow.md`](references/devtools-workflow.md) completely.
-Use its exact capture and scroll snippets.
+[`references/devtools-workflow.md`](references/devtools-workflow.md)
+completely. Use its exact hook and browser snippets. Also read
+[`scripts/capture-hook.js`](scripts/capture-hook.js) completely and pass its
+contents verbatim as the navigation `initScript`.
 
-## Export workflow
+## Prerequisites
 
-1. Set the output root to the current workspace unless the user supplied a
-   narrower directory. Resolve its absolute path.
-2. Confirm `jq`, `curl`, `file`, `shasum`, and `sips` exist. Confirm enough
-   disk space is available. Never commit or upload export output.
-3. Discover `famly-chrome` tools if they are deferred. Use its `list_pages`
-   tool, then select the authenticated page whose URL begins
-   `https://app.famly.co/#/account/home`.
-4. Reload that page with the reference's response-capture `initScript`.
-   Capture only successful response bodies for `/api/feed/feed/feed`; do not
-   call `get_network_request` in a way that prints request headers.
-5. Scroll the `main#content` container in bounded batches. Wait for each batch
-   to finish. Never start a duplicate scroll command. Continue until one batch
-   reports eight consecutive stable bottom checks.
-6. Save the reference's final capture object through `evaluate_script` using
-   an absolute `filePath`:
+1. Resolve the output root to the current workspace unless the user gave a
+   narrower directory.
+2. Confirm `node`, `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`, and
+   `grep` exist.
+3. Confirm sufficient disk space.
+4. Confirm `metadata/`, `photos/`, `videos/`, `files/`, and `messages/` are
+   ignored by Git.
+
+No Python or HAR is needed for the known API.
+
+## Capture workflow
+
+Follow the browser reference in order:
+
+1. Select the authenticated Famly tab through `famly-chrome`.
+2. Navigate to Home with the exact response-capture hook installed. It stores
+   only successful response bodies for the Home feed, conversation lists,
+   conversation detail pages, and `MessageReactions`.
+3. Scroll `main#content` in bounded batches until eight consecutive stable
+   bottom checks. Wait for each batch to exit; never start a duplicate
+   long-running command.
+4. Require exact equality between rendered Home post IDs and unique captured
+   feed post IDs.
+5. Repeat the unread-state warning, open Messages, and click **Show More**
+   until it disappears in both active and archived views.
+6. Record the complete initial unread-conversation count before opening any
+   conversation.
+7. Open every active and archived conversation. Reverse-scroll the
+   column-reversed `#reactConversationMessages` pane until each conversation
+   returns a page shorter than the 20-message API page size. Exact multiples
+   require the extra empty or short request. Wait for an explicit
+   `MessageReactions` entry for every captured message ID before advancing,
+   including zero-reaction entries.
+8. Require captured conversation IDs to equal the complete active-plus-archived
+   list.
+9. Save the response bodies and workflow evidence to:
 
    ```text
-   <output-root>/metadata/captured-feed-pages.json
+   <output-root>/metadata/captured-export.json
    ```
 
-   The MCP server needs `--allowUnrestrictedPaths` for this operation in
-   clients that do not negotiate filesystem roots.
-7. Run:
+Never call `get_network_request` to obtain bodies because it can expose
+request headers. A temporary ignored HAR is a diagnostic fallback only if
+response capture stops working; sanitize it, never preserve request headers,
+and delete it immediately after diagnosis.
 
-   ```sh
-   bash <skill-dir>/scripts/build-manifests.sh \
-     <output-root>/metadata/captured-feed-pages.json \
-     <output-root>
-   ```
+## Build and download
 
-   Treat a DOM/API post-count mismatch as an incomplete capture. Return to the
-   browser, refresh the capture, and do not download from an incomplete
-   manifest.
-8. Run:
+Run from the workspace root:
 
-   ```sh
-   bash <skill-dir>/scripts/download-photos.sh \
-     <output-root>/metadata/photos.json \
-     <output-root> \
-     8
-   ```
+```sh
+node .agents/skills/famly-export/scripts/build-export.mjs \
+  metadata/captured-export.json \
+  .
+```
 
-   Do not weaken failures or silently fall back to thumbnail URLs. If signed
-   URLs expired, recapture the feed to obtain fresh URLs and resume; completed
-   files are skipped.
-9. Read `metadata/export-summary.json` and compare:
-   - unique captured API posts to DOM post IDs;
-   - manifest photo count to downloaded file count;
-   - partial count to zero;
-   - decoder validation to success.
-10. Scan the output for `x-famly-accesstoken` and
-    `famly.session-marker`. A match is a security failure: stop, identify the
-    affected generated file without printing the value, and remove the
-    credential-bearing artifact.
+The dependency-free transformer writes:
+
+- `metadata/posts.json`;
+- `metadata/conversations.json`, with chronological deduplicated messages,
+  participants, reactions, read metadata, raw attachment fields, and local
+  attachment paths;
+- `metadata/media.json`, with media and owner identity, kind, fresh source URL,
+  safe path, filename, and expected MIME;
+- `metadata/export-summary.json`;
+- `messages/index.html` and one safely escaped static page per conversation.
+
+Ordinary message-body URLs remain clickable external links. Only explicit
+Famly-hosted image and file attachment fields enter the media manifest.
+
+Immediately run:
+
+```sh
+bash .agents/skills/famly-export/scripts/download-media.sh \
+  metadata/media.json \
+  . \
+  8
+```
+
+The downloader preserves the established `photos/<year>/...` paths so valid
+existing photos are skipped. It downloads into atomic resumable `.part` files,
+then validates all manifest paths and writes the consolidated checksum file:
+
+```text
+metadata/media-checksums.sha256
+```
+
+If signed URLs expire, recapture and resume. Never fall back to thumbnails or
+stale URLs.
+
+## Required validation
+
+Do not report completion unless all checks pass:
+
+- unique Home API IDs equal rendered Home IDs;
+- active and archived lists each reach a terminal page shorter than ten;
+- captured detail IDs equal active plus archived IDs;
+- every conversation reaches a terminal page shorter than twenty;
+- post, message, reaction, and media counts agree with manifests;
+- every message ID has explicit `MessageReactions` response evidence;
+- every media manifest path is nonempty;
+- zero `.part` files remain;
+- `file` MIME/signature checks match expected MIME;
+- `sips` decodes every supported image;
+- consolidated SHA-256 checksums cover every media path;
+- unsupported attachments or media are explicitly reported;
+- generated artifacts contain no `x-famly-accesstoken` or
+  `famly.session-marker` marker.
+
+MP4 and PDF validation is signature-level through native macOS `file`. Report
+plainly that it is not a deep `ffprobe` or `qpdf` parse.
 
 ## Completion
 
 Report:
 
-- output paths;
-- captured post count and date range;
-- unique full-resolution photo count and total size;
-- checksum path;
-- validation results;
-- excluded scope, especially Messages, videos, and other files.
+- private output paths;
+- Home post count and date range;
+- conversation counts split active and archived;
+- message date range, message count, and reaction count;
+- initial unread conversations affected;
+- media counts by Home photos, Home videos, Home files, and Message
+  attachments;
+- total downloaded size and checksum path;
+- capture, MIME, image decoder, signature, partial-file, and credential-marker
+  validation results;
+- every unsupported item.
 
-Stop the active DevTools controller if this run started one. Remind the user to
-turn off Chrome remote debugging at
-`chrome://inspect/#remote-debugging`. Leave private output untracked and
-uncommitted.
+Leave all private output ignored, untracked, and uncommitted. Stop the active
+DevTools controller if this run started one. Remind the user to turn off Chrome
+remote debugging at `chrome://inspect/#remote-debugging`.
