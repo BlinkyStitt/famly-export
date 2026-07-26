@@ -1,6 +1,6 @@
 ---
 name: famly-export
-description: Export a signed-in Famly Home feed and complete active and archived Messages history for a private offline backup through the dedicated famly-chrome Chrome DevTools MCP server. Captures response bodies without request credentials, downloads original photos, videos, files, and Famly-hosted message attachments, validates media, and builds lossless JSON plus a static offline message viewer.
+description: Export a signed-in Famly Home feed and complete active and archived Messages history for a private offline backup through the dedicated famly-chrome Chrome DevTools MCP server. Captures response bodies without request credentials, separates Home and Message images, downloads original media, validates it, and builds lossless JSON plus a static offline message viewer.
 ---
 
 # Famly Export
@@ -21,10 +21,25 @@ immediately before opening Messages.
 
 ## Required control surface
 
-Use only the Chrome DevTools MCP server named `famly-chrome`. It must attach to
-the user's existing signed-in Chrome profile with `--autoConnect`. Never
-substitute the in-app Browser, Playwright, a dedicated automation profile,
-saved pages, or direct browser-profile access.
+Use only the Chrome DevTools MCP server named `famly-chrome`. Before any
+browser work, run `codex mcp get famly-chrome` and require all of:
+
+```text
+chrome-devtools-mcp@1.6.0
+--autoConnect
+--allowUnrestrictedPaths
+--redactNetworkHeaders
+```
+
+`--autoConnect` attaches to the user's existing signed-in Chrome profile,
+`--allowUnrestrictedPaths` permits the final private capture save, and
+`--redactNetworkHeaders` protects browser tool output. If any argument is
+missing, stop before capture, follow the repository `README.md` to replace the
+entry, and restart Codex. Never create a secondary capture-save path to work
+around a broken MCP configuration.
+
+Never substitute the in-app Browser, Playwright, a dedicated automation
+profile, saved pages, or direct browser-profile access.
 
 The exact URL below is prohibited:
 
@@ -36,8 +51,10 @@ Never navigate to, fetch, probe, or otherwise load it. The required capture
 hook blocks Fetch and XHR attempts locally before the network request.
 
 If `famly-chrome` is unavailable, stop and ask the user to complete the setup
-in the repository `README.md`. If the connected profile is not signed in to
-Famly, ask the user to sign in themselves and open Home.
+in the repository `README.md`. Require the connected profile to have an
+authenticated Famly Home tab whose URL starts with
+`https://app.famly.co/#/account/home`. If it does not, ask the user to sign in
+and open Home themselves before continuing.
 
 Before browser work, read
 [`references/devtools-workflow.md`](references/devtools-workflow.md)
@@ -52,8 +69,8 @@ contents verbatim as the navigation `initScript`.
 2. Confirm `node`, `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`, and
    `grep` exist.
 3. Confirm sufficient disk space.
-4. Confirm `metadata/`, `photos/`, `videos/`, `files/`, and `messages/` are
-   ignored by Git.
+4. Confirm `metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, and
+   `messages/` are ignored by Git.
 
 No Python or HAR is needed for the known API.
 
@@ -62,7 +79,11 @@ No Python or HAR is needed for the known API.
 Follow the browser reference in order:
 
 1. Select the authenticated Famly tab through `famly-chrome`.
-2. Navigate to Home with the exact response-capture hook installed. It stores
+2. Perform a real `navigate_page` reload of the already-open Home tab with
+   `ignoreCache: true` and the exact response-capture hook as `initScript`.
+   A hash-only navigation does not execute `initScript` and is invalid. Verify
+   capture schema version 2, at least one feed page, the Home scroll container,
+   and the locally blocked-attempt counter before scrolling. The hook stores
    only successful response bodies for the Home feed, conversation lists,
    conversation detail pages, and `MessageReactions`.
 3. Scroll `main#content` in bounded batches until eight consecutive stable
@@ -93,6 +114,10 @@ request headers. A temporary ignored HAR is a diagnostic fallback only if
 response capture stops working; sanitize it, never preserve request headers,
 and delete it immediately after diagnosis.
 
+If the final `evaluate_script.filePath` save is denied, the MCP preflight was
+not satisfied. Do not use a browser download, chunked transfer, or another
+parallel save channel. Correct the MCP entry, restart Codex, and recapture.
+
 ## Build and download
 
 Run from the workspace root:
@@ -114,6 +139,14 @@ The dependency-free transformer writes:
 - `metadata/export-summary.json`;
 - `messages/index.html` and one safely escaped static page per conversation.
 
+Keep the two primary image collections directly accessible:
+
+- Home feed images directly in `photos/`;
+- Message images directly in `message-images/`.
+
+Keep explicit non-image Message files at
+`messages/attachments/<conversation-id>/...`. The static viewer must use
+relative links to these local files; never embed image bytes in the HTML.
 Ordinary message-body URLs remain clickable external links. Only explicit
 Famly-hosted image and file attachment fields enter the media manifest.
 
@@ -126,8 +159,8 @@ bash .agents/skills/famly-export/scripts/download-media.sh \
   8
 ```
 
-The downloader preserves the established `photos/<year>/...` paths so valid
-existing photos are skipped. It downloads into atomic resumable `.part` files,
+The downloader preserves established Home and Message image paths so valid
+existing files are skipped. It downloads into atomic resumable `.part` files,
 then validates all manifest paths and writes the consolidated checksum file:
 
 ```text
@@ -158,6 +191,9 @@ Do not report completion unless all checks pass:
 
 MP4 and PDF validation is signature-level through native macOS `file`. Report
 plainly that it is not a deep `ffprobe` or `qpdf` parse.
+macOS may identify a valid MP4 container as either `video/mp4` or
+`video/x-m4v`; the downloader accepts that exact signature alias while still
+requiring an MP4 manifest entry.
 
 ## Completion
 
@@ -168,11 +204,12 @@ Report:
 - conversation counts split active and archived;
 - message date range, message count, and reaction count;
 - initial unread conversations affected;
-- media counts by Home photos, Home videos, Home files, and Message
-  attachments;
+- media counts by Home photos, Home videos, Home files, Message images, and
+  other Message attachments;
 - total downloaded size and checksum path;
 - capture, MIME, image decoder, signature, partial-file, and credential-marker
   validation results;
+- the number of prohibited killswitch attempts blocked locally by the hook;
 - every unsupported item.
 
 Leave all private output ignored, untracked, and uncommitted. Stop the active

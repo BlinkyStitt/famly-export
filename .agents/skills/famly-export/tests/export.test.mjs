@@ -292,12 +292,22 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
   assert.equal(attachmentMessage.reactionSummary.count, 2);
   assert.equal(attachmentMessage.reactionSummary.reactions.length, 2);
   assert.equal(attachmentMessage.localAttachments.length, 2);
+  const imageAttachment = attachmentMessage.localAttachments.find(
+    (attachment) => attachment.kind === "image",
+  );
+  const fileAttachment = attachmentMessage.localAttachments.find(
+    (attachment) => attachment.kind === "file",
+  );
+  assert.ok(
+    imageAttachment.localPath.startsWith("message-images/"),
+  );
+  assert.equal(imageAttachment.localPath.split("/").length, 2);
+  assert.ok(
+    fileAttachment.localPath.startsWith("messages/attachments/active-2/"),
+  );
   assert.ok(
     attachmentMessage.localAttachments.every(
-      (attachment) =>
-        attachment.localPath.startsWith(
-          "messages/attachments/active-2/",
-        ) && !attachment.localPath.includes(".."),
+      (attachment) => !attachment.localPath.includes(".."),
     ),
   );
 
@@ -305,12 +315,13 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
   assert.equal(result.summary.media.homeImages, 1);
   assert.equal(result.summary.media.homeVideos, 1);
   assert.equal(result.summary.media.homeFiles, 1);
-  assert.equal(result.summary.media.messageAttachments, 2);
+  assert.equal(result.summary.media.messageImages, 1);
+  assert.equal(result.summary.media.messageFiles, 1);
   assert.ok(
     result.media.some(
       (entry) =>
         entry.relativePath ===
-        "photos/2026/2026-01-02_post-home_image-home.jpg",
+        "photos/2026-01-02_post-home_image-home.jpg",
     ),
   );
   assert.ok(
@@ -339,6 +350,12 @@ test("build writes lossless JSON and safely escaped static conversation pages", 
   );
   assert.equal(message.files[0].filename, "../../evil.pdf");
   assert.ok(message.localAttachments[1].localPath.endsWith("_evil.pdf"));
+  const imageAttachment = message.localAttachments.find(
+    (attachment) => attachment.kind === "image",
+  );
+  const fileAttachment = message.localAttachments.find(
+    (attachment) => attachment.kind === "file",
+  );
 
   const html = fs.readFileSync(
     path.join(outputRoot, "messages/active-2.html"),
@@ -352,6 +369,16 @@ test("build writes lossless JSON and safely escaped static conversation pages", 
     ),
   );
   assert.ok(!html.includes("<Unsafe name>"));
+  assert.ok(
+    html.includes(
+      `src="../${imageAttachment.localPath}"`,
+    ),
+  );
+  assert.ok(
+    html.includes(
+      `href="${fileAttachment.localPath.replace(/^messages\//, "")}"`,
+    ),
+  );
   assert.ok(fs.existsSync(path.join(outputRoot, "messages/index.html")));
 });
 

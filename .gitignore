@@ -3,6 +3,7 @@
 /photos/
 /videos/
 /files/
+/message-images/
 /messages/
 *.part
 *.har

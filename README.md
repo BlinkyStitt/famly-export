@@ -18,14 +18,16 @@ suitable private location.
 
 - Every post returned by the complete Famly Home feed.
 - Lossless Home post JSON.
-- Original-size Home photos at the established `photos/<year>/...` paths.
+- Original-size Home photos directly in `photos/`.
 - Direct Home MP4 videos.
 - Explicit Home file attachments.
 - Every active and archived conversation after exhausting **Show More** in both
   views.
 - Complete chronological message history, including exact 20-message page
   multiples, message read metadata, and `MessageReactions`.
-- Explicit Famly-hosted message image and file attachments.
+- Explicit Famly-hosted Message images directly in `message-images/`.
+- Explicit non-image Message files in
+  `messages/attachments/<conversation-id>/...`.
 - Lossless conversation JSON with local attachment paths.
 - A dependency-free static HTML viewer with one safely escaped page per
   conversation.
@@ -106,7 +108,9 @@ codex mcp get famly-chrome
 codex mcp list
 ```
 
-If the existing entry lacks the arguments above, replace it:
+Do not begin browser capture unless `codex mcp get famly-chrome` shows the
+exact package version and all three arguments above. If the existing entry
+lacks any of them, replace it:
 
 ```sh
 codex mcp remove famly-chrome
@@ -116,6 +120,10 @@ codex mcp add famly-chrome -- \
   --allowUnrestrictedPaths \
   --redactNetworkHeaders
 ```
+
+Restart Codex after adding or replacing the entry. A capture made through an
+older server process cannot be repaired with a secondary browser-download or
+chunked-save path; restart and recapture through the configured server.
 
 For long browser operations, add the following to the generated
 `[mcp_servers.famly-chrome]` table in `~/.codex/config.toml`:
@@ -165,7 +173,9 @@ Before browser automation, the skill repeats:
 
 The skill then:
 
-1. Installs the exact response-capture and killswitch-blocking hook on Home.
+1. Performs a real reload of the already-open Home tab with the exact
+   response-capture and killswitch-blocking hook. A hash-only navigation is
+   not sufficient because it does not install the initialization script.
 2. Scrolls Home to eight stable bottom checks.
 3. Requires rendered post IDs to equal captured API post IDs.
 4. Exhausts **Show More** in active and archived Messages.
@@ -195,8 +205,9 @@ metadata/
 ├── media.json
 └── posts.json
 photos/
-└── <year>/
-    └── <post-date>_<post-id>_<image-id>.<extension>
+└── <post-date>_<post-id>_<image-id>.<extension>
+message-images/
+└── <message-date>_<message-id>_<image-id>.<extension>
 videos/
 └── <year>/
     └── <post-date>_<post-id>_<video-id>.mp4
@@ -208,12 +219,17 @@ messages/
 ├── <conversation-id>.html
 └── attachments/
     └── <conversation-id>/
-        └── <message-date>_<message-id>_<media-id>_<safe-filename>
+        └── <message-date>_<message-id>_<file-id>_<safe-filename>
 ```
 
-`metadata/`, `photos/`, `videos/`, `files/`, `messages/`, `*.part`, and
-temporary HAR files are ignored. Never override that protection for a normal
-family backup.
+The two image collections are therefore directly available as `photos/` for
+the Home feed and `message-images/` for Messages. The Message HTML pages use
+ordinary relative file links to `message-images/`; the image bytes are not
+embedded in the HTML.
+
+`metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, `messages/`,
+`*.part`, and temporary HAR files are ignored. Never override that protection
+for a normal family backup.
 
 ## Local tools
 
@@ -241,8 +257,8 @@ node --test .agents/skills/famly-export/tests/export.test.mjs
 ```
 
 The downloader writes to `.part` files and atomically renames completed media.
-Existing nonempty paths are skipped, including the established Home photo
-paths.
+Existing nonempty paths are skipped, including established Home and Message
+image paths.
 
 ## Validation boundary
 
@@ -257,7 +273,9 @@ Native macOS validation includes:
 - a credential-marker scan over generated JSON, HTML, and checksums.
 
 MP4 and PDF validation is signature-level only. It does not perform a deep
-`ffprobe` video parse or `qpdf` PDF parse.
+`ffprobe` video parse or `qpdf` PDF parse. macOS may identify a valid MP4
+container as `video/x-m4v`; the downloader accepts that exact signature alias
+for a `video/mp4` manifest entry.
 
 The transformer rejects incomplete or unsafe capture state, including:
 
@@ -305,6 +323,13 @@ The feed is incomplete. Continue the existing bounded scroll sequence until
 eight stable bottom checks, then recapture. Do not download from a mismatched
 manifest.
 
+### Home capture reports no hook or no feed page
+
+Make sure the signed-in tab is already open at
+`https://app.famly.co/#/account/home`, then perform a real reload with the
+tracked hook as `navigate_page.initScript`. Changing only the URL hash does
+not execute the initialization script.
+
 ### Conversation export ends on 20 messages
 
 Reverse-scroll again. An exact multiple of 20 requires one additional API
@@ -319,7 +344,15 @@ skipped.
 ### The prohibited killswitch appears as a real network request
 
 Stop the capture. Confirm `scripts/capture-hook.js` was passed verbatim as the
-navigation `initScript`. Do not load or inspect the prohibited URL.
+reload `initScript`, and report the locally blocked-attempt count from the
+capture. Do not load or inspect the prohibited URL.
+
+### Saving `captured-export.json` is denied
+
+Stop and run `codex mcp get famly-chrome`. The server must include
+`--allowUnrestrictedPaths` and `--redactNetworkHeaders`; correct the entry,
+restart Codex, and recapture. Do not route the private capture through a
+browser download or another parallel save mechanism.
 
 ### In-page response capture stops working
 

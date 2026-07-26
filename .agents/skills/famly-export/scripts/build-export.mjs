@@ -344,7 +344,7 @@ function createHomeMedia(posts, media, mediaKeys, unsupported) {
         ownerId: postId,
         kind: "image",
         sourceUrl,
-        relativePath: `photos/${year}/${filename}`,
+        relativePath: `photos/${filename}`,
         filename,
       });
     }
@@ -423,7 +423,7 @@ function messageAttachmentMedia({
       conversationId,
       kind: "image",
       sourceUrl,
-      relativePath: `messages/attachments/${safeConversationId}/${filename}`,
+      relativePath: `message-images/${filename}`,
       filename: sourceName,
     });
     if (entry) {
@@ -551,7 +551,7 @@ ${body}
 }
 
 function attachmentHtml(attachment) {
-  const href = attachment.localPath.replace(/^messages\//, "");
+  const href = path.posix.relative("messages", attachment.localPath);
   const label = escapeHtml(attachment.filename);
   if (attachment.expectedMime.startsWith("image/")) {
     return `<li><a href="${escapeHtml(href)}">${label}</a><img class="attachment-image" loading="lazy" src="${escapeHtml(href)}" alt=""></li>`;
@@ -807,8 +807,12 @@ export function transformCapture(capture) {
       homeFiles: media.filter(
         (entry) => entry.sourceType === "home" && entry.kind === "file",
       ).length,
-      messageAttachments: media.filter((entry) => entry.sourceType === "message")
-        .length,
+      messageImages: media.filter(
+        (entry) => entry.sourceType === "message" && entry.kind === "image",
+      ).length,
+      messageFiles: media.filter(
+        (entry) => entry.sourceType === "message" && entry.kind !== "image",
+      ).length,
       unsupported: unsupported.length,
       unsupportedItems: unsupported,
     },

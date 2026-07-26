@@ -39,6 +39,7 @@ mkdir -p \
   "$output_root/photos" \
   "$output_root/videos" \
   "$output_root/files" \
+  "$output_root/message-images" \
   "$output_root/messages/attachments"
 
 jq -e '
@@ -61,7 +62,20 @@ jq -e '
     (.relativePath | type == "string") and
     (
       .relativePath
-      | test("^(photos|videos|files|messages/attachments)/")
+      | test("^(photos|videos|files|message-images|messages/attachments)/")
+    ) and
+    (
+      (
+        .sourceType == "home" and
+        .kind == "image" and
+        (.relativePath | test("^photos/[^/]+$"))
+      ) or
+      (
+        .sourceType == "message" and
+        .kind == "image" and
+        (.relativePath | test("^message-images/[^/]+$"))
+      ) or
+      (.kind != "image")
     ) and
     (.relativePath | contains("\\") | not) and
     (.relativePath | test("[[:cntrl:]]") | not) and
@@ -138,6 +152,7 @@ for media_root in \
   "$output_root/photos" \
   "$output_root/videos" \
   "$output_root/files" \
+  "$output_root/message-images" \
   "$output_root/messages/attachments"; do
   while IFS= read -r _part_path; do
     partial_count=$((partial_count + 1))

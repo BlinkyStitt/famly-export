@@ -14,28 +14,39 @@ prohibited during this workflow. The capture hook intercepts both Fetch and
 XHR attempts before the real network call. Do not manually navigate to, fetch,
 open, probe, or otherwise load it.
 
-## 1. Select the authenticated tab
+## 1. Verify the dedicated server
+
+Before calling a browser tool, run:
+
+```sh
+codex mcp get famly-chrome
+```
+
+Require `chrome-devtools-mcp@1.6.0`, `--autoConnect`,
+`--allowUnrestrictedPaths`, and `--redactNetworkHeaders`. If any item is
+missing, stop before capture, replace the entry as documented in the
+repository `README.md`, and restart Codex. Do not add a secondary save channel
+to compensate for an incorrectly configured server.
+
+## 2. Select the authenticated Home tab
 
 Call `list_pages`. Select the Famly page in the signed-in Chrome profile. Its
 URL must begin with:
 
 ```text
-https://app.famly.co/#/account/
+https://app.famly.co/#/account/home
 ```
 
 If no authenticated Famly page exists, stop and ask the user to sign in
 themselves, then open **Home**. Do not request credentials.
 
-## 2. Install the capture hook on Home
+## 3. Install the capture hook with a real reload
 
 Read `../scripts/capture-hook.js` completely and pass its entire contents,
-verbatim, as `navigate_page.initScript`. Navigate to:
-
-```text
-https://app.famly.co/#/account/home
-```
-
-Use a 30-second navigation timeout. The hook:
+verbatim, as `navigate_page.initScript`. Call `navigate_page` with
+`type: "reload"`, `ignoreCache: true`, and a 30-second navigation timeout.
+Changing the URL or hash is not a substitute: a hash-only navigation does not
+execute the initialization script. The hook:
 
 - blocks the prohibited killswitch URL locally;
 - captures successful JSON response bodies for Home feed pages;
@@ -63,7 +74,7 @@ async () => {
 Do not continue unless `schemaVersion` is `2`, `feedPages` is at least one,
 and `scrollContainer` is true.
 
-## 3. Load the complete Home feed
+## 4. Load the complete Home feed
 
 Run this bounded batch and wait for it to finish. Never start a second batch
 while the first is running.
@@ -156,7 +167,7 @@ After reaching eight stable checks, record exact DOM evidence:
 
 Do not proceed if `equal` is false.
 
-## 4. Open Messages and exhaust the active list
+## 5. Open Messages and exhaust the active list
 
 Repeat the unread-state warning to the user immediately before this step:
 
@@ -258,7 +269,7 @@ async () => {
 
 The returned terminal page size must be less than ten.
 
-## 5. Exhaust the archived list
+## 6. Exhaust the archived list
 
 Open the Messages-level options menu and choose **Show archived messages**:
 
@@ -376,7 +387,7 @@ async () => {
 The returned terminal page size must be less than ten. Zero archived
 conversations is valid when the captured offset-zero response is empty.
 
-## 6. Record unread state before opening conversations
+## 7. Record unread state before opening conversations
 
 This must happen after both complete lists and before the first conversation
 is opened:
@@ -417,7 +428,7 @@ is opened:
 }
 ```
 
-## 7. Open every conversation and reverse-scroll to its terminal page
+## 8. Open every conversation and reverse-scroll to its terminal page
 
 If the archived view is still open, return to the active inbox first:
 
@@ -561,7 +572,7 @@ intentional and required completeness evidence. Do not advance to the next
 conversation until `MessageReactions` contains an explicit entry for every
 captured message ID, including zero-reaction entries.
 
-## 8. Save response bodies and workflow evidence
+## 9. Save response bodies and workflow evidence
 
 Wait one second for cloned response bodies, then save this exact object with
 `evaluate_script.filePath` set to the absolute path:
@@ -597,7 +608,11 @@ evidence only. It contains no deliberately captured request headers, request
 bodies, cookies, or access tokens. Never use `get_network_request` to retrieve
 body data because that can expose request headers.
 
-## 9. Build, download, and validate
+If `evaluate_script.filePath` is denied, stop. Correct the `famly-chrome`
+configuration, restart Codex, and repeat the capture. Do not save through a
+browser download, chunked transfer, or another parallel mechanism.
+
+## 10. Build, download, and validate
 
 From the workspace root:
 
@@ -613,8 +628,10 @@ bash .agents/skills/famly-export/scripts/download-media.sh \
 ```
 
 Run the downloader immediately because the Home video and file URLs expire.
-Completed photo paths are preserved and skipped. If a signed URL expires,
-recapture and rerun; completed files remain in place.
+Completed Home photos in `photos/` and Message images in `message-images/` are
+preserved and skipped. Explicit non-image Message files remain under
+`messages/attachments/`. If a signed URL expires, recapture and rerun;
+completed files remain in place.
 
 Read `metadata/export-summary.json` and verify:
 
@@ -623,6 +640,10 @@ Read `metadata/export-summary.json` and verify:
 - both list views ended on a page shorter than ten;
 - every conversation ended on a page shorter than twenty;
 - unique post, message, and media counts match their manifests;
+- every Home image is directly under `photos/`, every Message image is
+  directly under `message-images/`, and non-image Message files use
+  `messages/attachments/`;
+- every captured message ID has explicit `MessageReactions` response evidence;
 - every media path is a nonempty file;
 - no `.part` files remain;
 - MIME and supported-image decoder validation passed;
@@ -631,7 +652,10 @@ Read `metadata/export-summary.json` and verify:
 - no credential marker file was reported.
 
 MP4 and PDF validation is intentionally signature-level through `file`; it is
-not a deep `ffprobe` or `qpdf` parse.
+not a deep `ffprobe` or `qpdf` parse. macOS `file` may report a valid MP4 as
+`video/x-m4v`; that exact alias is accepted for `video/mp4` manifest entries.
+Report the number of prohibited killswitch attempts blocked locally by the
+hook.
 
 ## Diagnostic fallback only
 
