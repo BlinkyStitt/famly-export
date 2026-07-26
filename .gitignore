@@ -1,0 +1,8 @@
+# Private Famly export output. Never commit these files.
+/metadata/
+/photos/
+*.part
+
+# Local operating-system and tool caches.
+/.DS_Store
+/.pytest_cache/

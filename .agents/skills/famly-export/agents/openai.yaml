@@ -1,0 +1,10 @@
+interface:
+  display_name: "Famly Export"
+  short_description: "Export Famly posts and original photos"
+  default_prompt: "Use $famly-export to export the signed-in Famly Home feed and original photos into this workspace."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "famly-chrome"
+      description: "Chrome DevTools MCP attached to the existing signed-in Chrome profile"
+      transport: "stdio"
