@@ -29,8 +29,8 @@ suitable private location.
 - Explicit non-image Message files in
   `messages/attachments/<conversation-id>/...`.
 - Lossless conversation JSON with local attachment paths.
-- A dependency-free static HTML viewer with one safely escaped page per
-  conversation.
+- One dependency-free, safely escaped `messages/index.html` containing every
+  conversation and message inline.
 - A consolidated SHA-256 checksum file and export summary.
 
 Ordinary URLs in a message body, including external Google Drive links, remain
@@ -216,16 +216,16 @@ files/
     └── <post-date>_<post-id>_<file-id>_<safe-filename>
 messages/
 ├── index.html
-├── <conversation-id>.html
 └── attachments/
     └── <conversation-id>/
         └── <message-date>_<message-id>_<file-id>_<safe-filename>
 ```
 
 The two image collections are therefore directly available as `photos/` for
-the Home feed and `message-images/` for Messages. The Message HTML pages use
-ordinary relative file links to `message-images/`; the image bytes are not
-embedded in the HTML.
+the Home feed and `message-images/` for Messages. The Message HTML viewer uses
+ordinary relative file links to `message-images/`; the image bytes and image
+elements are not embedded in the HTML. `messages/index.html` is one tall file
+with a conversation table of contents followed by all messages inline.
 
 `metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, `messages/`,
 `*.part`, and temporary HAR files are ignored. Never override that protection

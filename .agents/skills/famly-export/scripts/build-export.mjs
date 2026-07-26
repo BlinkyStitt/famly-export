@@ -526,12 +526,11 @@ nav { margin-bottom: 1.5rem; }
 .meta { opacity: .75; font-size: .9rem; }
 .conversation-list { padding: 0; list-style: none; }
 .conversation-list li { border-bottom: 1px solid #8885; padding: .8rem 0; }
+.conversation { border-top: 2px solid #8888; margin-top: 3rem; padding-top: 1rem; }
 .message { border: 1px solid #8885; border-radius: .6rem; margin: .8rem 0; padding: .9rem; }
 .message header { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
 .body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .attachments { padding-left: 1.25rem; }
-.attachment-image { display: block; margin-top: .5rem; max-height: 32rem; max-width: 100%; }
-video { display: block; margin-top: .5rem; max-width: 100%; }
 `.trim();
 
 function htmlDocument(title, body) {
@@ -553,61 +552,63 @@ ${body}
 function attachmentHtml(attachment) {
   const href = path.posix.relative("messages", attachment.localPath);
   const label = escapeHtml(attachment.filename);
-  if (attachment.expectedMime.startsWith("image/")) {
-    return `<li><a href="${escapeHtml(href)}">${label}</a><img class="attachment-image" loading="lazy" src="${escapeHtml(href)}" alt=""></li>`;
-  }
-  if (attachment.expectedMime === "video/mp4") {
-    return `<li><a href="${escapeHtml(href)}">${label}</a><video controls preload="metadata" src="${escapeHtml(href)}"></video></li>`;
-  }
   return `<li><a href="${escapeHtml(href)}">${label}</a></li>`;
 }
 
-function conversationViewer(conversation) {
-  const title = conversationTitle(conversation);
-  const participants = asArray(conversation.participants)
-    .map((participant) => participant?.title)
-    .filter(Boolean)
-    .join(", ");
-  const messages = conversation.messages
-    .map((message) => {
-      const author = message.author?.title || "Unknown author";
-      const body =
-        typeof message.body === "string"
-          ? message.body
-          : message.body == null
-            ? ""
-            : JSON.stringify(message.body);
-      const attachments = asArray(message.localAttachments);
-      const reactionCount = Number(message.reactionSummary?.count || 0);
-      return `<article class="message" id="message-${escapeHtml(message.messageId)}">
+function messageHtml(message) {
+  const author = message.author?.title || "Unknown author";
+  const body =
+    typeof message.body === "string"
+      ? message.body
+      : message.body == null
+        ? ""
+        : JSON.stringify(message.body);
+  const attachments = asArray(message.localAttachments);
+  const reactionCount = Number(message.reactionSummary?.count || 0);
+  return `<article class="message" id="message-${escapeHtml(message.messageId)}">
   <header><strong>${escapeHtml(author)}</strong><time datetime="${escapeHtml(message.createdAt)}">${escapeHtml(message.createdAt)}</time></header>
   <div class="body">${linkifyText(body)}</div>
   ${reactionCount > 0 ? `<div class="meta">Reactions: ${reactionCount}</div>` : ""}
   ${attachments.length > 0 ? `<ul class="attachments">${attachments.map(attachmentHtml).join("")}</ul>` : ""}
 </article>`;
-    })
-    .join("\n");
-  return htmlDocument(
-    title,
-    `<nav><a href="index.html">All conversations</a></nav>
-<h1>${escapeHtml(title)}</h1>
-<p class="meta">Participants: ${escapeHtml(participants || "Not recorded")} · ${conversation.messages.length} messages · Initially unread: ${conversation.initialUnread ? "yes" : "no"}</p>
-${messages || "<p>No messages.</p>"}`,
+}
+
+function conversationSectionHtml(conversation) {
+  const safeConversationId = safeId(
+    conversation.conversationId,
+    "Conversation ID",
   );
+  const title = conversationTitle(conversation);
+  const participants = asArray(conversation.participants)
+    .map((participant) => participant?.title)
+    .filter(Boolean)
+    .join(", ");
+  const messages = conversation.messages.map(messageHtml).join("\n");
+  return `<section class="conversation" id="conversation-${escapeHtml(safeConversationId)}">
+<h2>${escapeHtml(title)}</h2>
+<p class="meta">Participants: ${escapeHtml(participants || "Not recorded")} · ${conversation.messages.length} messages · Initially unread: ${conversation.initialUnread ? "yes" : "no"}</p>
+${messages || "<p>No messages.</p>"}
+</section>`;
 }
 
 function indexViewer(conversations, summary) {
   const items = conversations
     .map((conversation) => {
       const title = conversationTitle(conversation);
-      return `<li><a href="${escapeHtml(safeId(conversation.conversationId, "Conversation ID"))}.html">${escapeHtml(title)}</a><div class="meta">${conversation.messages.length} messages · ${conversation.listKind}${conversation.initialUnread ? " · initially unread" : ""}</div></li>`;
+      const safeConversationId = safeId(
+        conversation.conversationId,
+        "Conversation ID",
+      );
+      return `<li><a href="#conversation-${escapeHtml(safeConversationId)}">${escapeHtml(title)}</a><div class="meta">${conversation.messages.length} messages · ${conversation.listKind}${conversation.initialUnread ? " · initially unread" : ""}</div></li>`;
     })
     .join("\n");
+  const sections = conversations.map(conversationSectionHtml).join("\n");
   return htmlDocument(
     "Famly Messages export",
     `<h1>Famly Messages export</h1>
 <p class="meta">Captured ${escapeHtml(summary.capturedAt)} · ${conversations.length} conversations · ${summary.messages.messages} messages</p>
-<ul class="conversation-list">${items}</ul>`,
+<nav aria-label="Conversations"><ul class="conversation-list">${items}</ul></nav>
+<main>${sections}</main>`,
   );
 }
 
@@ -834,12 +835,6 @@ export function transformCapture(capture) {
     summary,
     html: {
       index: indexViewer(conversations, summary),
-      conversations: new Map(
-        conversations.map((conversation) => [
-          `${safeId(conversation.conversationId, "Conversation ID")}.html`,
-          conversationViewer(conversation),
-        ]),
-      ),
     },
   };
 }
@@ -894,8 +889,14 @@ export function buildExport(capturePath, outputRoot) {
   writeJson(path.join(metadataRoot, "media.json"), result.media);
   writeJson(path.join(metadataRoot, "export-summary.json"), result.summary);
   writeAtomically(path.join(messagesRoot, "index.html"), result.html.index);
-  for (const [filename, html] of result.html.conversations) {
-    writeAtomically(path.join(messagesRoot, filename), html);
+  for (const entry of fs.readdirSync(messagesRoot, { withFileTypes: true })) {
+    if (
+      entry.isFile() &&
+      entry.name !== "index.html" &&
+      entry.name.endsWith(".html")
+    ) {
+      fs.unlinkSync(path.join(messagesRoot, entry.name));
+    }
   }
   const markerFiles = credentialMarkerFiles(outputRoot);
   assert(

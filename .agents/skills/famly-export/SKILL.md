@@ -137,7 +137,8 @@ The dependency-free transformer writes:
 - `metadata/media.json`, with media and owner identity, kind, fresh source URL,
   safe path, filename, and expected MIME;
 - `metadata/export-summary.json`;
-- `messages/index.html` and one safely escaped static page per conversation.
+- one safely escaped `messages/index.html` containing a conversation table of
+  contents followed by every conversation and message inline.
 
 Keep the two primary image collections directly accessible:
 
@@ -146,7 +147,9 @@ Keep the two primary image collections directly accessible:
 
 Keep explicit non-image Message files at
 `messages/attachments/<conversation-id>/...`. The static viewer must use
-relative links to these local files; never embed image bytes in the HTML.
+relative links to these local files. Render images as links only: never emit
+image elements or embed image bytes in the HTML. Remove obsolete generated
+per-conversation HTML pages so `index.html` is the only viewer file.
 Ordinary message-body URLs remain clickable external links. Only explicit
 Famly-hosted image and file attachment fields enter the media manifest.
 

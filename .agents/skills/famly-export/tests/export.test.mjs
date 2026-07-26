@@ -331,9 +331,15 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
   );
 });
 
-test("build writes lossless JSON and safely escaped static conversation pages", () => {
+test("build writes one safely escaped all-messages viewer with attachment links", () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "famly-export-test-"));
   const capturePath = path.join(outputRoot, "captured.json");
+  const messagesRoot = path.join(outputRoot, "messages");
+  fs.mkdirSync(messagesRoot);
+  fs.writeFileSync(
+    path.join(messagesRoot, "obsolete-conversation.html"),
+    "obsolete",
+  );
   fs.writeFileSync(capturePath, JSON.stringify(fixtureCapture()));
   const summary = buildExport(capturePath, outputRoot);
 
@@ -358,8 +364,16 @@ test("build writes lossless JSON and safely escaped static conversation pages", 
   );
 
   const html = fs.readFileSync(
-    path.join(outputRoot, "messages/active-2.html"),
+    path.join(messagesRoot, "index.html"),
     "utf8",
+  );
+  assert.equal(
+    (html.match(/<section class="conversation"/g) ?? []).length,
+    summary.messages.conversations,
+  );
+  assert.equal(
+    (html.match(/<article class="message"/g) ?? []).length,
+    summary.messages.messages,
   );
   assert.ok(html.includes("&lt;script&gt;"));
   assert.ok(!html.includes('<script>alert("unsafe")</script>'));
@@ -371,15 +385,19 @@ test("build writes lossless JSON and safely escaped static conversation pages", 
   assert.ok(!html.includes("<Unsafe name>"));
   assert.ok(
     html.includes(
-      `src="../${imageAttachment.localPath}"`,
+      `href="../${imageAttachment.localPath}"`,
     ),
   );
+  assert.ok(!html.includes("<img"));
   assert.ok(
     html.includes(
       `href="${fileAttachment.localPath.replace(/^messages\//, "")}"`,
     ),
   );
-  assert.ok(fs.existsSync(path.join(outputRoot, "messages/index.html")));
+  assert.deepEqual(
+    fs.readdirSync(messagesRoot).filter((filename) => filename.endsWith(".html")),
+    ["index.html"],
+  );
 });
 
 test("capture validation requires explicit Show More exhaustion", () => {
