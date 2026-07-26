@@ -76,6 +76,21 @@ function fixtureCapture() {
     feedItemId: "post-home",
     createdDate: "2026-01-02T12:00:00Z",
     body: "Home post",
+    comments: [
+      {
+        commentId: "comment-with-images",
+        createdDate: "2026-01-03T12:00:00Z",
+        body: "Five originals",
+        sender: { title: "Comment author" },
+        images: Array.from({ length: 5 }, (_, index) => ({
+          imageId: `comment-image-${index + 1}`,
+          prefix: "https://img.famly.co",
+          width: 1200,
+          height: 900,
+          key: `comments/original-${index + 1}.jpg?signature=fresh`,
+        })),
+      },
+    ],
     images: [
       {
         imageId: "image-home",
@@ -106,6 +121,7 @@ function fixtureCapture() {
     captureStartedAt: "2026-01-04T00:00:00Z",
     capturedAt: "2026-01-04T00:10:00Z",
     pageUrl: "https://app.famly.co/#/account/inbox",
+    blockedKillswitchRequests: 2,
     feedPages: [
       {
         url: "https://app.famly.co/api/feed/feed/feed?limit=20",
@@ -311,8 +327,11 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
     ),
   );
 
-  assert.equal(result.media.length, 5);
-  assert.equal(result.summary.media.homeImages, 1);
+  assert.equal(result.media.length, 10);
+  assert.equal(result.summary.media.homeImages, 6);
+  assert.equal(result.summary.media.homePostImages, 1);
+  assert.equal(result.summary.media.homeCommentImages, 5);
+  assert.equal(result.summary.home.commentImageReferences, 5);
   assert.equal(result.summary.media.homeVideos, 1);
   assert.equal(result.summary.media.homeFiles, 1);
   assert.equal(result.summary.media.messageImages, 1);
@@ -324,6 +343,19 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
         "photos/2026-01-02_post-home_image-home.jpg",
     ),
   );
+  const commentImages = result.media.filter(
+    (entry) => entry.ownerType === "comment",
+  );
+  assert.equal(commentImages.length, 5);
+  assert.ok(
+    commentImages.every(
+      (entry) =>
+        entry.ownerId === "comment-with-images" &&
+        entry.relativePath.startsWith("photos/") &&
+        entry.relativePath.split("/").length === 2 &&
+        entry.identity.includes(":comment:"),
+    ),
+  );
   assert.ok(
     result.media.every(
       (entry) => !entry.sourceUrl.includes("drive.google.com"),
@@ -331,7 +363,7 @@ test("fixture covers list pagination, reverse history, deduplication, reactions,
   );
 });
 
-test("build writes one safely escaped all-messages viewer with attachment links", () => {
+test("build writes a fixed manifest-backed viewer shell without private records", () => {
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "famly-export-test-"));
   const capturePath = path.join(outputRoot, "captured.json");
   const messagesRoot = path.join(outputRoot, "messages");
@@ -367,36 +399,70 @@ test("build writes one safely escaped all-messages viewer with attachment links"
     path.join(messagesRoot, "index.html"),
     "utf8",
   );
-  assert.equal(
-    (html.match(/<section class="conversation"/g) ?? []).length,
-    summary.messages.conversations,
+  assert.ok(html.includes('id="timeline"'));
+  assert.ok(html.includes('src="/messages/viewer-app.mjs"'));
+  assert.ok(html.includes("Export favorites as ZIP"));
+  for (const privateValue of [
+    "post-home",
+    "active-2-message-1",
+    "Conversation active-2",
+    '<script>alert("unsafe")</script>',
+    imageAttachment.localPath,
+    fileAttachment.localPath,
+  ]) {
+    assert.ok(!html.includes(privateValue));
+  }
+  const viewerApp = fs.readFileSync(
+    path.join(messagesRoot, "viewer-app.mjs"),
+    "utf8",
   );
-  assert.equal(
-    (html.match(/<article class="message"/g) ?? []).length,
-    summary.messages.messages,
-  );
-  assert.ok(html.includes("&lt;script&gt;"));
-  assert.ok(!html.includes('<script>alert("unsafe")</script>'));
-  assert.ok(
-    html.includes(
-      'href="https://drive.google.com/example" rel="noreferrer"',
-    ),
-  );
-  assert.ok(!html.includes("<Unsafe name>"));
-  assert.ok(
-    html.includes(
-      `href="../${imageAttachment.localPath}"`,
-    ),
-  );
-  assert.ok(!html.includes("<img"));
-  assert.ok(
-    html.includes(
-      `href="${fileAttachment.localPath.replace(/^messages\//, "")}"`,
-    ),
-  );
+  assert.ok(viewerApp.includes("/metadata/posts.json"));
+  assert.ok(viewerApp.includes("/metadata/conversations.json"));
+  assert.ok(viewerApp.includes("/metadata/media.json"));
+  assert.ok(viewerApp.includes("/metadata/export-summary.json"));
+  assert.ok(!viewerApp.includes("active-2-message-1"));
+  assert.ok(!/\.(?:innerHTML|outerHTML)\s*=|insertAdjacentHTML|document\.write/.test(viewerApp));
   assert.deepEqual(
     fs.readdirSync(messagesRoot).filter((filename) => filename.endsWith(".html")),
     ["index.html"],
+  );
+});
+
+test("unsupported comment media is reported without entering the manifest", () => {
+  const capture = fixtureCapture();
+  capture.feedPages[0].data.feedItems[0].comments[0].images.push({
+    imageId: "unsupported-comment-image",
+    prefix: "https://img.famly.co",
+    width: 100,
+    height: 100,
+    key: "comments/unsupported.bmp?signature=fresh",
+  });
+  capture.feedPages[1].data.feedItems[0] = structuredClone(
+    capture.feedPages[0].data.feedItems[0],
+  );
+  const result = transformCapture(capture);
+  assert.equal(result.summary.home.commentImageReferences, 6);
+  assert.equal(result.summary.media.homeCommentImages, 5);
+  assert.deepEqual(
+    result.summary.media.unsupportedItems.find(
+      (item) => item.mediaId === "unsupported-comment-image",
+    ),
+    {
+      mediaId: "unsupported-comment-image",
+      sourceType: "home",
+      ownerType: "comment",
+      ownerId: "comment-with-images",
+      conversationId: null,
+      kind: "image",
+      filename:
+        "2026-01-03_comment-with-images_unsupported-comment-image.bmp",
+      reason: "unsupported-extension:bmp",
+    },
+  );
+  assert.ok(
+    !result.media.some(
+      (entry) => entry.mediaId === "unsupported-comment-image",
+    ),
   );
 });
 

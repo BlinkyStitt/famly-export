@@ -47,9 +47,18 @@ jq -e '
   length > 0 and
   all(.[];
     (.mediaId | type == "string" and length > 0) and
-    (.sourceType == "home" or .sourceType == "message") and
-    (.ownerType == "post" or .ownerType == "message") and
     (.kind == "image" or .kind == "video" or .kind == "file") and
+    (
+      (
+        .sourceType == "home" and
+        (
+          .ownerType == "post" or
+          (.ownerType == "comment" and .kind == "image")
+        )
+      ) or
+      (.sourceType == "message" and .ownerType == "message")
+    ) and
+    (.identity | type == "string" and startswith("v1:")) and
     (.sourceUrl | type == "string") and
     (
       .sourceUrl
@@ -67,6 +76,7 @@ jq -e '
     (
       (
         .sourceType == "home" and
+        (.ownerType == "post" or .ownerType == "comment") and
         .kind == "image" and
         (.relativePath | test("^photos/[^/]+$"))
       ) or
@@ -104,6 +114,7 @@ jq -e '
 # values so spaces and punctuation in safe filenames are preserved.
 # shellcheck disable=SC2016
 download_one='
+  set -euo pipefail
   source_url=$1
   target_path=$2
   part_path="${target_path}.part"
@@ -134,7 +145,7 @@ if ! jq -j --arg root "$output_root" '
   | .sourceUrl, "\u0000", ($root + "/" + .relativePath), "\u0000"
 ' "$manifest_path" |
   xargs -0 -n 2 -P "$concurrency" bash -c "$download_one" _; then
-  echo "One or more media downloads failed; resumable .part files were retained" >&2
+  echo "One or more media downloads failed; resumable .part files were retained when present" >&2
   exit 1
 fi
 
@@ -264,7 +275,7 @@ while IFS= read -r generated_path; do
 done < <(
   find "$metadata_dir" "$output_root/messages" \
     -type f \
-    \( -name '*.json' -o -name '*.html' -o -name '*.sha256' \)
+    \( -name '*.json' -o -name '*.html' -o -name '*.mjs' -o -name '*.sha256' \)
 )
 
 if [[ "${#credential_marker_files[@]}" -ne 0 ]]; then

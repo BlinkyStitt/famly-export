@@ -18,7 +18,7 @@ suitable private location.
 
 - Every post returned by the complete Famly Home feed.
 - Lossless Home post JSON.
-- Original-size Home photos directly in `photos/`.
+- Original-size Home post and comment photos directly in `photos/`.
 - Direct Home MP4 videos.
 - Explicit Home file attachments.
 - Every active and archived conversation after exhausting **Show More** in both
@@ -29,8 +29,11 @@ suitable private location.
 - Explicit non-image Message files in
   `messages/attachments/<conversation-id>/...`.
 - Lossless conversation JSON with local attachment paths.
-- One dependency-free, safely escaped `messages/index.html` containing every
-  conversation and message inline.
+- One dependency-free JSON-backed timeline that mixes Home posts and Messages
+  newest-first, nests comments under their posts, and shows conversation
+  context on each Message.
+- Inline original local images with browser-local favorites and a conventional
+  ZIP export containing selected originals in one `Famly Favorites/` folder.
 - A consolidated SHA-256 checksum file and export summary.
 
 Ordinary URLs in a message body, including external Google Drive links, remain
@@ -66,7 +69,7 @@ immediately after diagnosis.
 - Node.js.
 - `npx` for the MCP server package.
 - `jq`, `curl`, `xargs`, and the native macOS `file`, `shasum`, `sips`, `find`,
-  and `grep` utilities.
+  `grep`, and `ditto` utilities.
 - Enough local disk for all original media.
 
 The direct `famly-chrome` Chrome DevTools MCP configuration is required. The
@@ -185,9 +188,9 @@ The skill then:
 7. Captures an explicit `MessageReactions` entry for every message ID,
    including messages with zero reactions, before advancing.
 8. Requires captured conversation IDs to equal active plus archived IDs.
-9. Builds JSON and the static viewer.
-10. Immediately downloads fresh Home videos, Home files, and Message
-    attachments while resuming around existing photos.
+9. Builds the four authoritative JSON manifests and the fixed viewer shell.
+10. Immediately downloads fresh Home post/comment media and Message
+    attachments while resuming around existing complete files.
 11. Validates every supported media file and scans generated artifacts for
     credential markers without printing matched values.
 
@@ -205,7 +208,8 @@ metadata/
 ├── media.json
 └── posts.json
 photos/
-└── <post-date>_<post-id>_<image-id>.<extension>
+├── <post-date>_<post-id>_<image-id>.<extension>
+└── <comment-date>_<comment-id>_<image-id>.<extension>
 message-images/
 └── <message-date>_<message-id>_<image-id>.<extension>
 videos/
@@ -216,16 +220,19 @@ files/
     └── <post-date>_<post-id>_<file-id>_<safe-filename>
 messages/
 ├── index.html
+├── viewer-app.mjs
 └── attachments/
     └── <conversation-id>/
         └── <message-date>_<message-id>_<file-id>_<safe-filename>
 ```
 
 The two image collections are therefore directly available as `photos/` for
-the Home feed and `message-images/` for Messages. The Message HTML viewer uses
-ordinary relative file links to `message-images/`; the image bytes and image
-elements are not embedded in the HTML. `messages/index.html` is one tall file
-with a conversation table of contents followed by all messages inline.
+Home posts and comments and `message-images/` for Messages. The fixed HTML
+shell and browser module contain no exported names, bodies, IDs, JSON payloads,
+or image bytes. At runtime they fetch `posts.json`, `conversations.json`,
+`media.json`, and `export-summary.json`, then create private content with safe
+DOM APIs. Original local image paths are used directly with `loading="lazy"`;
+no thumbnail files or caches are created.
 
 `metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, `messages/`,
 `*.part`, and temporary HAR files are ignored. Never override that protection
@@ -233,7 +240,7 @@ for a normal family backup.
 
 ## Local tools
 
-Build manifests and the static viewer:
+Build the manifests and fixed viewer application:
 
 ```sh
 node .agents/skills/famly-export/scripts/build-export.mjs \
@@ -250,10 +257,40 @@ bash .agents/skills/famly-export/scripts/download-media.sh \
   8
 ```
 
+Launch the private viewer:
+
+```sh
+node .agents/skills/famly-export/scripts/serve-export.mjs .
+```
+
+Open <http://127.0.0.1:4173/>. The server binds only to that loopback address
+and serves only the viewer, four manifests, manifest-listed media, and the
+narrow favorites archive routes. It rejects raw capture access, directory
+listings, unknown roots, traversal, and cross-origin archive requests.
+
+An optional second argument changes the port:
+
+```sh
+node .agents/skills/famly-export/scripts/serve-export.mjs . 4812
+```
+
+Favorites live in versioned browser `localStorage`. Browser storage is
+origin-specific, so changing the port creates a separate selection. On load,
+the viewer drops saved identities that are no longer present in `media.json`.
+Opening `messages/index.html` directly with `file://` is unsupported because
+browsers do not permit its JSON fetches; the page displays this launch command.
+
+Click an image or its keyboard-accessible **Favorite** button to toggle it.
+The footer exports selected original files—never thumbnails or transformed
+copies—as a ZIP. The local API accepts current image identities only, stages
+hard links, uses `ditto --norsrc`, assigns deterministic names if future
+basenames collide, permits one creation at a time, and deletes one-time or
+expired archives.
+
 Run fixture tests:
 
 ```sh
-node --test .agents/skills/famly-export/tests/export.test.mjs
+node --test .agents/skills/famly-export/tests/*.test.mjs
 ```
 
 The downloader writes to `.part` files and atomically renames completed media.
@@ -271,6 +308,12 @@ Native macOS validation includes:
 - image decoding and dimensions through `sips` for supported images;
 - SHA-256 checksums for every manifest path;
 - a credential-marker scan over generated JSON, HTML, and checksums.
+- a real fixture ZIP check that verifies the selected source checksums, one
+  flat `Famly Favorites/` folder, and no `__MACOSX` metadata.
+- server allowlist, MIME, loopback, origin, size/count, concurrency, expiry,
+  cleanup, and traversal tests.
+- viewer ordering, timestamp-tie, nested-comment, original-path, lazy-loading,
+  favorite, storage-restoration, malformed-manifest, and hostile-value tests.
 
 MP4 and PDF validation is signature-level only. It does not perform a deep
 `ffprobe` video parse or `qpdf` PDF parse. macOS may identify a valid MP4
@@ -286,6 +329,7 @@ The transformer rejects incomplete or unsafe capture state, including:
 - message histories whose last API page contains 20 messages;
 - any message ID without explicit `MessageReactions` response evidence;
 - duplicate or traversal-capable media paths;
+- comment images without a stable comment owner or flat `photos/` path;
 - unsupported media extensions, which are retained in lossless JSON and
   reported in the summary rather than silently downloaded.
 
@@ -339,7 +383,33 @@ request returning fewer than 20, including an empty terminal page.
 
 Famly's signed media URLs expire. Repeat the complete response-body capture and
 rerun the builder and downloader immediately. Existing complete files are
-skipped.
+skipped. This also applies when newly discovered comment images are the only
+missing files; do not substitute their `url_big` thumbnail/preview fields for
+the original-media contract.
+
+### Opening `messages/index.html` shows a server instruction
+
+This is expected for `file://`. Run:
+
+```sh
+node .agents/skills/famly-export/scripts/serve-export.mjs .
+```
+
+Then open <http://127.0.0.1:4173/>. Use the same port on future launches if
+you want the same browser-local favorites.
+
+### The viewer reports a missing manifest
+
+Run the builder again and confirm all four JSON files exist under `metadata/`.
+The server intentionally does not infer private records from HTML or create a
+parallel timeline manifest.
+
+### Favorites ZIP creation fails
+
+Confirm every selected media path is a nonempty current manifest-listed image,
+native `/usr/bin/ditto` exists, and there is free temporary disk space. Reload
+the viewer to prune stale identities. A second export request receives a
+conflict response while the first is still being created.
 
 ### The prohibited killswitch appears as a real network request
 
@@ -359,6 +429,20 @@ browser download or another parallel save mechanism.
 First inspect the tracked hook and known endpoint paths without retrieving
 request headers. A temporary ignored HAR is the last diagnostic fallback only.
 Sanitize it, do not retain headers or tokens, and delete it immediately.
+
+## Completion report
+
+A completed run reports the private output paths; Home post/comment counts and
+date range; active/archived conversation counts; Message/reaction counts and
+date range; the initial unread count; media counts by Home post photos, Home
+comment photos, Home videos/files, Message images, and other Message
+attachments; total bytes and checksum path; unsupported items; locally blocked
+prohibited requests; capture/MIME/decoder/signature/partial/credential results;
+and the viewer/server/ZIP validation results.
+
+MP4 and PDF results must remain labeled signature-level only. Private output
+stays ignored and uncommitted; only the reusable skill, scripts, tests, and
+documentation belong in Git.
 
 ## Disconnect after the export
 

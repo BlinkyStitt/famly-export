@@ -2,10 +2,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { mediaIdentity } from "./viewer-app.mjs";
 
 const LIST_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 20;
+const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 const MIME_BY_EXTENSION = new Map([
   ["jpg", "image/jpeg"],
@@ -209,6 +212,8 @@ function addMediaEntry({
     filename,
     expectedMime: type.mime,
   };
+  entry.identity = mediaIdentity(entry);
+  assert(entry.identity, `Media record has no stable identity: ${key}`);
   const existing = mediaKeys.get(key);
   if (existing) {
     assert(
@@ -348,6 +353,32 @@ function createHomeMedia(posts, media, mediaKeys, unsupported) {
         filename,
       });
     }
+    for (const comment of asArray(post.comments)) {
+      const commentId = comment?.commentId;
+      for (const image of asArray(comment?.images)) {
+        const sourceUrl = originalImageUrl(image);
+        const extension =
+          extensionFromName(image?.key) ||
+          extensionFromName(image?.url_big) ||
+          extensionFromName(image?.url) ||
+          "jpg";
+        const commentDate = isoDatePart(comment?.createdDate);
+        const filename = `${commentDate}_${safeId(commentId, "Comment ID")}_${safeId(image?.imageId, "Image ID")}.${extension}`;
+        addMediaEntry({
+          media,
+          mediaKeys,
+          unsupported,
+          mediaId: image?.imageId,
+          sourceType: "home",
+          ownerType: "comment",
+          ownerId: commentId,
+          kind: "image",
+          sourceUrl,
+          relativePath: `photos/${filename}`,
+          filename,
+        });
+      }
+    }
     for (const video of asArray(post.videos)) {
       const mediaId = video?.videoId || video?.persistenceId;
       const sourceUrl = video?.videoUrl;
@@ -468,150 +499,6 @@ function messageAttachmentMedia({
   return refs;
 }
 
-export function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function linkifyText(value) {
-  const text = String(value ?? "");
-  const pattern = /https?:\/\/[^\s<>"']+/gi;
-  let result = "";
-  let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
-    result += escapeHtml(text.slice(cursor, match.index));
-    let urlText = match[0];
-    let trailing = "";
-    while (/[),.;!?]$/.test(urlText)) {
-      trailing = urlText.at(-1) + trailing;
-      urlText = urlText.slice(0, -1);
-    }
-    let safeHref = null;
-    try {
-      const url = new URL(urlText);
-      if (url.protocol === "http:" || url.protocol === "https:") {
-        safeHref = url.href;
-      }
-    } catch {
-      // Invalid text remains escaped text.
-    }
-    result += safeHref
-      ? `<a href="${escapeHtml(safeHref)}" rel="noreferrer">${escapeHtml(urlText)}</a>`
-      : escapeHtml(urlText);
-    result += escapeHtml(trailing);
-    cursor = match.index + match[0].length;
-  }
-  return result + escapeHtml(text.slice(cursor));
-}
-
-function conversationTitle(conversation) {
-  if (typeof conversation.title === "string" && conversation.title.trim()) {
-    return conversation.title.trim();
-  }
-  const participantNames = asArray(conversation.participants)
-    .map((participant) => participant?.title)
-    .filter((title) => typeof title === "string" && title.trim());
-  return participantNames.join(", ") || `Conversation ${conversation.conversationId}`;
-}
-
-const VIEWER_STYLE = `
-:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-body { margin: 0 auto; max-width: 920px; padding: 1.25rem; line-height: 1.45; }
-a { color: #0072b2; overflow-wrap: anywhere; }
-nav { margin-bottom: 1.5rem; }
-.meta { opacity: .75; font-size: .9rem; }
-.conversation-list { padding: 0; list-style: none; }
-.conversation-list li { border-bottom: 1px solid #8885; padding: .8rem 0; }
-.conversation { border-top: 2px solid #8888; margin-top: 3rem; padding-top: 1rem; }
-.message { border: 1px solid #8885; border-radius: .6rem; margin: .8rem 0; padding: .9rem; }
-.message header { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
-.body { white-space: pre-wrap; overflow-wrap: anywhere; }
-.attachments { padding-left: 1.25rem; }
-`.trim();
-
-function htmlDocument(title, body) {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(title)}</title>
-  <style>${VIEWER_STYLE}</style>
-</head>
-<body>
-${body}
-</body>
-</html>
-`;
-}
-
-function attachmentHtml(attachment) {
-  const href = path.posix.relative("messages", attachment.localPath);
-  const label = escapeHtml(attachment.filename);
-  return `<li><a href="${escapeHtml(href)}">${label}</a></li>`;
-}
-
-function messageHtml(message) {
-  const author = message.author?.title || "Unknown author";
-  const body =
-    typeof message.body === "string"
-      ? message.body
-      : message.body == null
-        ? ""
-        : JSON.stringify(message.body);
-  const attachments = asArray(message.localAttachments);
-  const reactionCount = Number(message.reactionSummary?.count || 0);
-  return `<article class="message" id="message-${escapeHtml(message.messageId)}">
-  <header><strong>${escapeHtml(author)}</strong><time datetime="${escapeHtml(message.createdAt)}">${escapeHtml(message.createdAt)}</time></header>
-  <div class="body">${linkifyText(body)}</div>
-  ${reactionCount > 0 ? `<div class="meta">Reactions: ${reactionCount}</div>` : ""}
-  ${attachments.length > 0 ? `<ul class="attachments">${attachments.map(attachmentHtml).join("")}</ul>` : ""}
-</article>`;
-}
-
-function conversationSectionHtml(conversation) {
-  const safeConversationId = safeId(
-    conversation.conversationId,
-    "Conversation ID",
-  );
-  const title = conversationTitle(conversation);
-  const participants = asArray(conversation.participants)
-    .map((participant) => participant?.title)
-    .filter(Boolean)
-    .join(", ");
-  const messages = conversation.messages.map(messageHtml).join("\n");
-  return `<section class="conversation" id="conversation-${escapeHtml(safeConversationId)}">
-<h2>${escapeHtml(title)}</h2>
-<p class="meta">Participants: ${escapeHtml(participants || "Not recorded")} · ${conversation.messages.length} messages · Initially unread: ${conversation.initialUnread ? "yes" : "no"}</p>
-${messages || "<p>No messages.</p>"}
-</section>`;
-}
-
-function indexViewer(conversations, summary) {
-  const items = conversations
-    .map((conversation) => {
-      const title = conversationTitle(conversation);
-      const safeConversationId = safeId(
-        conversation.conversationId,
-        "Conversation ID",
-      );
-      return `<li><a href="#conversation-${escapeHtml(safeConversationId)}">${escapeHtml(title)}</a><div class="meta">${conversation.messages.length} messages · ${conversation.listKind}${conversation.initialUnread ? " · initially unread" : ""}</div></li>`;
-    })
-    .join("\n");
-  const sections = conversations.map(conversationSectionHtml).join("\n");
-  return htmlDocument(
-    "Famly Messages export",
-    `<h1>Famly Messages export</h1>
-<p class="meta">Captured ${escapeHtml(summary.capturedAt)} · ${conversations.length} conversations · ${summary.messages.messages} messages</p>
-<nav aria-label="Conversations"><ul class="conversation-list">${items}</ul></nav>
-<main>${sections}</main>`,
-  );
-}
-
 export function transformCapture(capture) {
   assert(capture && typeof capture === "object", "Capture root must be an object");
   assert(asArray(capture.feedPages).length > 0, "No Home feed response pages were captured");
@@ -629,8 +516,10 @@ export function transformCapture(capture) {
       }
     }
   }
-  const posts = [...postsById.values()].sort((left, right) =>
-    String(right.createdDate).localeCompare(String(left.createdDate)),
+  const posts = [...postsById.values()].sort(
+    (left, right) =>
+      String(right.createdDate).localeCompare(String(left.createdDate)) ||
+      String(left.feedItemId).localeCompare(String(right.feedItemId)),
   );
   assert(posts.length > 0, "The capture contains no Home posts");
   const domPostIds = uniqueStrings(asArray(capture.workflow.home.domPostIds));
@@ -706,8 +595,10 @@ export function transformCapture(capture) {
         }
       }
     }
-    const chronologicalMessages = [...messagesById.values()].sort((left, right) =>
-      String(left.createdAt).localeCompare(String(right.createdAt)),
+    const chronologicalMessages = [...messagesById.values()].sort(
+      (left, right) =>
+        String(left.createdAt).localeCompare(String(right.createdAt)) ||
+        String(left.messageId).localeCompare(String(right.messageId)),
     );
     const normalizedMessages = chronologicalMessages.map((message) => {
       const reactionSummary = reactions.get(message.messageId);
@@ -744,8 +635,10 @@ export function transformCapture(capture) {
       },
     });
   }
-  conversations.sort((left, right) =>
-    String(left.createdAt).localeCompare(String(right.createdAt)),
+  conversations.sort(
+    (left, right) =>
+      String(left.createdAt).localeCompare(String(right.createdAt)) ||
+      String(left.conversationId).localeCompare(String(right.conversationId)),
   );
   media.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 
@@ -762,6 +655,11 @@ export function transformCapture(capture) {
     capturedAt: capture.capturedAt ?? null,
     captureStartedAt: capture.captureStartedAt ?? null,
     pageUrl: capture.pageUrl ?? null,
+    blockedKillswitchRequests:
+      Number.isInteger(capture.blockedKillswitchRequests) &&
+      capture.blockedKillswitchRequests >= 0
+        ? capture.blockedKillswitchRequests
+        : null,
     home: {
       feedPages: capture.feedPages.length,
       posts: posts.length,
@@ -769,6 +667,16 @@ export function transformCapture(capture) {
       newestPost: dates.length ? [...dates].sort().at(-1) : null,
       postsWithImages: posts.filter((post) => asArray(post.images).length > 0).length,
       imageReferences: posts.reduce((total, post) => total + asArray(post.images).length, 0),
+      commentImageReferences: posts.reduce(
+        (total, post) =>
+          total +
+          asArray(post.comments).reduce(
+            (commentTotal, comment) =>
+              commentTotal + asArray(comment?.images).length,
+            0,
+          ),
+        0,
+      ),
       videoReferences: posts.reduce((total, post) => total + asArray(post.videos).length, 0),
       fileReferences: posts.reduce((total, post) => total + asArray(post.files).length, 0),
     },
@@ -802,6 +710,18 @@ export function transformCapture(capture) {
       homeImages: media.filter(
         (entry) => entry.sourceType === "home" && entry.kind === "image",
       ).length,
+      homePostImages: media.filter(
+        (entry) =>
+          entry.sourceType === "home" &&
+          entry.ownerType === "post" &&
+          entry.kind === "image",
+      ).length,
+      homeCommentImages: media.filter(
+        (entry) =>
+          entry.sourceType === "home" &&
+          entry.ownerType === "comment" &&
+          entry.kind === "image",
+      ).length,
       homeVideos: media.filter(
         (entry) => entry.sourceType === "home" && entry.kind === "video",
       ).length,
@@ -834,7 +754,14 @@ export function transformCapture(capture) {
     media,
     summary,
     html: {
-      index: indexViewer(conversations, summary),
+      index: fs.readFileSync(
+        path.join(SCRIPT_ROOT, "viewer-shell.html"),
+        "utf8",
+      ),
+      app: fs.readFileSync(
+        path.join(SCRIPT_ROOT, "viewer-app.mjs"),
+        "utf8",
+      ),
     },
   };
 }
@@ -867,7 +794,7 @@ function credentialMarkerFiles(outputRoot) {
           if (entry.name !== "attachments") {
             pending.push(target);
           }
-        } else if (/\.(?:json|html|sha256)$/i.test(entry.name)) {
+        } else if (/\.(?:json|html|mjs|sha256)$/i.test(entry.name)) {
           if (markers.test(fs.readFileSync(target, "utf8"))) {
             matches.push(target);
           }
@@ -889,6 +816,7 @@ export function buildExport(capturePath, outputRoot) {
   writeJson(path.join(metadataRoot, "media.json"), result.media);
   writeJson(path.join(metadataRoot, "export-summary.json"), result.summary);
   writeAtomically(path.join(messagesRoot, "index.html"), result.html.index);
+  writeAtomically(path.join(messagesRoot, "viewer-app.mjs"), result.html.app);
   for (const entry of fs.readdirSync(messagesRoot, { withFileTypes: true })) {
     if (
       entry.isFile() &&

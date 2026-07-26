@@ -1,6 +1,6 @@
 ---
 name: famly-export
-description: Export a signed-in Famly Home feed and complete active and archived Messages history for a private offline backup through the dedicated famly-chrome Chrome DevTools MCP server. Captures response bodies without request credentials, separates Home and Message images, downloads original media, validates it, and builds lossless JSON plus a static offline message viewer.
+description: Export a signed-in Famly Home feed and complete active and archived Messages history for a private offline backup through the dedicated famly-chrome Chrome DevTools MCP server. Captures response bodies without request credentials, separates Home and Message images, downloads original media, validates it, and builds lossless JSON plus a loopback-served unified timeline with favorites ZIP export.
 ---
 
 # Famly Export
@@ -66,8 +66,8 @@ contents verbatim as the navigation `initScript`.
 
 1. Resolve the output root to the current workspace unless the user gave a
    narrower directory.
-2. Confirm `node`, `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`, and
-   `grep` exist.
+2. Confirm `node`, `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`,
+   `grep`, and native macOS `ditto` exist.
 3. Confirm sufficient disk space.
 4. Confirm `metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, and
    `messages/` are ignored by Git.
@@ -137,20 +137,22 @@ The dependency-free transformer writes:
 - `metadata/media.json`, with media and owner identity, kind, fresh source URL,
   safe path, filename, and expected MIME;
 - `metadata/export-summary.json`;
-- one safely escaped `messages/index.html` containing a conversation table of
-  contents followed by every conversation and message inline.
+- one fixed `messages/index.html` application shell and its fixed
+  `messages/viewer-app.mjs` browser module. They contain no exported records
+  and fetch the four generated JSON manifests at runtime.
 
 Keep the two primary image collections directly accessible:
 
-- Home feed images directly in `photos/`;
+- Home post and comment images directly in `photos/`;
 - Message images directly in `message-images/`.
 
 Keep explicit non-image Message files at
-`messages/attachments/<conversation-id>/...`. The static viewer must use
-relative links to these local files. Render images as links only: never emit
-image elements or embed image bytes in the HTML. Remove obsolete generated
-per-conversation HTML pages so `index.html` is the only viewer file.
-Ordinary message-body URLs remain clickable external links. Only explicit
+`messages/attachments/<conversation-id>/...`. The viewer maps all attachments
+through `media.json`, renders original local image files with lazy `<img>`
+elements, and keeps ordinary links to each original file. It never creates,
+caches, or manages thumbnails. Remove obsolete generated per-conversation
+HTML pages. Ordinary post, comment, and message-body HTTP(S) URLs remain
+clickable external links after protocol validation. Only explicit
 Famly-hosted image and file attachment fields enter the media manifest.
 
 Immediately run:
@@ -173,6 +175,35 @@ metadata/media-checksums.sha256
 If signed URLs expire, recapture and resume. Never fall back to thumbnails or
 stale URLs.
 
+## Local viewer and favorites
+
+Open the export through the dependency-free loopback server:
+
+```sh
+node .agents/skills/famly-export/scripts/serve-export.mjs .
+```
+
+It binds only to `127.0.0.1:4173`. An optional second argument overrides the
+port, but favorites are stored in browser `localStorage` and are
+origin-specific, so changing ports uses a different saved selection.
+`file://` is not a supported launch mode because browsers block manifest
+fetches; the shell explains the server command when opened that way.
+
+The unified timeline mixes Home posts and individual Messages newest-first,
+keeps comments nested beneath their Home post, and shows conversation context
+on every Message. Image clicks and accessible Favorite buttons toggle a stable
+manifest-derived media identity. Saved favorites are intersected with the
+current manifest on every load.
+
+The footer exports selected original images through a two-step same-origin
+local API. The server validates every identity against current `media.json`,
+stages hard links in one flat `Famly Favorites/` directory, invokes native
+macOS `ditto` with resource metadata disabled, and returns a random one-time
+ZIP URL. It enforces request limits, one concurrent archive creation, expiry,
+and cleanup. It serves only the shell, its browser module, the four manifests,
+manifest-listed media, and the narrow archive routes; raw capture data,
+directory listings, traversal, and cross-origin archive requests are denied.
+
 ## Required validation
 
 Do not report completion unless all checks pass:
@@ -184,6 +215,8 @@ Do not report completion unless all checks pass:
 - post, message, reaction, and media counts agree with manifests;
 - every message ID has explicit `MessageReactions` response evidence;
 - every media manifest path is nonempty;
+- all comment images use `ownerType: "comment"`, the comment ID, and a flat
+  `photos/<filename>` path;
 - zero `.part` files remain;
 - `file` MIME/signature checks match expected MIME;
 - `sips` decodes every supported image;
@@ -191,6 +224,12 @@ Do not report completion unless all checks pass:
 - unsupported attachments or media are explicitly reported;
 - generated artifacts contain no `x-famly-accesstoken` or
   `famly.session-marker` marker.
+- fixture tests cover deterministic timeline ordering, nested comments,
+  original lazy images, accessible favorites, storage pruning, hostile
+  strings/URLs, the server allowlist, origin/body/count boundaries, expiry,
+  cleanup, and a checksum-preserving `ditto` ZIP without `__MACOSX`.
+- `messages/index.html` and `messages/viewer-app.mjs` contain no exported
+  names, bodies, IDs, JSON payloads, or image bytes.
 
 MP4 and PDF validation is signature-level through native macOS `file`. Report
 plainly that it is not a deep `ffprobe` or `qpdf` parse.
@@ -207,13 +246,14 @@ Report:
 - conversation counts split active and archived;
 - message date range, message count, and reaction count;
 - initial unread conversations affected;
-- media counts by Home photos, Home videos, Home files, Message images, and
-  other Message attachments;
+- media counts by Home post/comment photos, Home videos, Home files, Message
+  images, and other Message attachments;
 - total downloaded size and checksum path;
 - capture, MIME, image decoder, signature, partial-file, and credential-marker
   validation results;
 - the number of prohibited killswitch attempts blocked locally by the hook;
 - every unsupported item.
+- viewer/server validation results and the local launch URL.
 
 Leave all private output ignored, untracked, and uncommitted. Stop the active
 DevTools controller if this run started one. Remind the user to turn off Chrome

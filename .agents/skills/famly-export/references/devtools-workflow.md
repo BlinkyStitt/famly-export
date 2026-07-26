@@ -627,11 +627,12 @@ bash .agents/skills/famly-export/scripts/download-media.sh \
   8
 ```
 
-Run the downloader immediately because the Home video and file URLs expire.
-Completed Home photos in `photos/` and Message images in `message-images/` are
-preserved and skipped. Explicit non-image Message files remain under
-`messages/attachments/`. If a signed URL expires, recapture and rerun;
-completed files remain in place.
+Run the downloader immediately because all signed media URLs expire. Completed
+Home post/comment photos in `photos/` and Message images in `message-images/`
+are preserved and skipped. Explicit non-image Message files remain under
+`messages/attachments/`. If a signed URL expires, repeat the complete capture
+and rerun; completed files remain in place. Never substitute `url_big` or
+another preview for a missing original comment image.
 
 Read `metadata/export-summary.json` and verify:
 
@@ -640,8 +641,9 @@ Read `metadata/export-summary.json` and verify:
 - both list views ended on a page shorter than ten;
 - every conversation ended on a page shorter than twenty;
 - unique post, message, and media counts match their manifests;
-- every Home image is directly under `photos/`, every Message image is
-  directly under `message-images/`, and non-image Message files use
+- every Home post/comment image is directly under `photos/`, comment image
+  records use `ownerType: "comment"` plus the comment ID, every Message image
+  is directly under `message-images/`, and non-image Message files use
   `messages/attachments/`;
 - every captured message ID has explicit `MessageReactions` response evidence;
 - every media path is a nonempty file;
@@ -650,6 +652,23 @@ Read `metadata/export-summary.json` and verify:
 - consolidated SHA-256 checksums exist;
 - unsupported media is explicitly reported;
 - no credential marker file was reported.
+- the fixed viewer shell and module contain no exported private values, load
+  the four manifests through the loopback server, and pass the timeline,
+  safe-DOM, original-image, favorites, storage, server, and real ZIP fixture
+  tests.
+
+Launch the result with:
+
+```sh
+node .agents/skills/famly-export/scripts/serve-export.mjs .
+```
+
+The default origin is `http://127.0.0.1:4173/`. An optional port argument
+changes the origin and therefore uses separate browser `localStorage`.
+Direct `file://` opening is unsupported. Verify that the server exposes only
+the viewer, four manifests, manifest-listed media, and archive routes; raw
+capture data, directory listings, traversal, and cross-origin archive
+requests must remain inaccessible.
 
 MP4 and PDF validation is intentionally signature-level through `file`; it is
 not a deep `ffprobe` or `qpdf` parse. macOS `file` may report a valid MP4 as

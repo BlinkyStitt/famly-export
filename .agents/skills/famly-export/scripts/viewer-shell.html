@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  >
+  <title>Famly timeline</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Comic Sans MS", "Comic Sans", cursive;
+      --accent: #4477AA;
+      --favorite: #CCBB44;
+      --error: #AA3377;
+      --surface: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+      --border: color-mix(in srgb, CanvasText 24%, transparent);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --accent: #66CCEE;
+        --error: #EE6677;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.5; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+    button { font: inherit; }
+    .page-header, #timeline {
+      margin-inline: auto;
+      max-width: 920px;
+      padding-inline: 1rem;
+    }
+    .page-header { padding-block: 1.5rem .75rem; }
+    .page-header h1 { margin: 0; }
+    .status { margin: .35rem 0 0; opacity: .76; }
+    .error { color: var(--error); opacity: 1; }
+    #timeline { padding-bottom: 7rem; }
+    .timeline-entry {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: .8rem;
+      margin-block: 1rem;
+      padding: 1rem;
+    }
+    .entry-kind {
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      opacity: .68;
+      text-transform: uppercase;
+    }
+    .entry-header {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+      gap: .35rem 1rem;
+      justify-content: space-between;
+    }
+    .entry-header h2, .comments h3 { margin: .25rem 0; }
+    .entry-time { font-size: .9rem; opacity: .7; }
+    .entry-body { overflow-wrap: anywhere; white-space: pre-wrap; }
+    .conversation-context {
+      border-left: .25rem solid var(--accent);
+      display: grid;
+      font-size: .9rem;
+      gap: .1rem;
+      margin-block: .5rem;
+      padding-left: .75rem;
+    }
+    .attachments { margin-top: .8rem; }
+    .image-grid {
+      display: grid;
+      gap: .75rem;
+      grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+    }
+    .image-card {
+      border: 2px solid transparent;
+      border-radius: .6rem;
+      margin: 0;
+      overflow: hidden;
+    }
+    .image-card.is-favorite {
+      border-color: var(--favorite);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--favorite) 35%, transparent);
+    }
+    .image-toggle { display: block; }
+    .image-toggle:focus-visible, .favorite-button:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .image-card img {
+      background: color-mix(in srgb, CanvasText 8%, transparent);
+      cursor: pointer;
+      display: block;
+      height: auto;
+      max-height: 72vh;
+      object-fit: contain;
+      width: 100%;
+    }
+    .image-actions {
+      align-items: center;
+      display: flex;
+      gap: .75rem;
+      justify-content: space-between;
+      padding: .45rem;
+    }
+    .favorite-button {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: .35rem;
+      cursor: pointer;
+      padding: .35rem .55rem;
+    }
+    .favorite-button[aria-pressed="true"] {
+      background: color-mix(in srgb, var(--favorite) 24%, transparent);
+      border-color: var(--favorite);
+    }
+    .comments {
+      border-top: 1px solid var(--border);
+      margin-top: 1rem;
+      padding-top: .6rem;
+    }
+    .comment {
+      border-left: .2rem solid var(--border);
+      margin-block: .7rem;
+      padding-left: .8rem;
+    }
+    .reaction-summary { font-size: .9rem; margin-top: .5rem; opacity: .75; }
+    .favorites-footer {
+      align-items: center;
+      backdrop-filter: blur(12px);
+      background: color-mix(in srgb, Canvas 88%, transparent);
+      border-top: 1px solid var(--border);
+      bottom: 0;
+      display: flex;
+      gap: .75rem 1rem;
+      justify-content: center;
+      left: 0;
+      padding: .8rem 1rem;
+      position: fixed;
+      right: 0;
+      z-index: 10;
+    }
+    #export-favorites {
+      background: var(--accent);
+      border: 0;
+      border-radius: .45rem;
+      color: white;
+      cursor: pointer;
+      font-weight: 700;
+      padding: .65rem .9rem;
+    }
+    #export-favorites:disabled { cursor: not-allowed; opacity: .5; }
+    .export-status { font-size: .9rem; }
+    @media (max-width: 560px) {
+      .favorites-footer { align-items: stretch; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header class="page-header">
+    <h1>Famly timeline</h1>
+    <p id="viewer-status" class="status" role="status">Loading private export…</p>
+  </header>
+  <main id="timeline" aria-live="polite"></main>
+  <footer class="favorites-footer">
+    <strong id="selected-count">0 selected</strong>
+    <button id="export-favorites" type="button" disabled>Export favorites as ZIP</button>
+    <span id="export-status" class="export-status" role="status"></span>
+  </footer>
+  <noscript>This viewer requires JavaScript. Start the documented local server and enable JavaScript.</noscript>
+  <script type="module" src="/messages/viewer-app.mjs"></script>
+</body>
+</html>

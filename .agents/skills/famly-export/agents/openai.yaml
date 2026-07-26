@@ -1,7 +1,7 @@
 interface:
   display_name: "Famly Export"
   short_description: "Export Famly Home, Messages, and original media"
-  default_prompt: "Use $famly-export from the already-signed-in Famly Home tab to export the complete Home feed and all active and archived Messages, with Home images flat in photos/, Message images flat in message-images/, original media, and one all-messages index.html viewer with images as links."
+  default_prompt: "Use $famly-export from the already-signed-in Famly Home tab to export the complete Home feed and all active and archived Messages, with post and comment images flat in photos/, Message images flat in message-images/, original media, and the unified local timeline viewer with favorites ZIP export."
 dependencies:
   tools:
     - type: "mcp"
