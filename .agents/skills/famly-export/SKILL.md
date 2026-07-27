@@ -38,7 +38,8 @@ path and any valid resume path.
 ## Required browser boundary
 
 Use only the Chrome DevTools MCP server named `famly-chrome`. It connects to the
-ordinary visible Chrome process on `127.0.0.1:9223` using the dedicated profile:
+isolated visible Chrome process on `127.0.0.1:9223` using this dedicated app
+profile, never the user's ordinary Chrome profile:
 
 ```text
 ${HOME}/Library/Application Support/Famly Export Chrome
@@ -94,12 +95,14 @@ Keep capture schema version 2.
    archived views, and record the complete initial unread-conversation count
    before opening a conversation.
 5. Save and record checkpoint phase `conversation-lists`.
-6. Open every conversation. Reverse-scroll
-   `#reactConversationMessages` until a page shorter than 20 arrives. Exact
-   multiples require the extra empty or short request. Require explicit
-   `MessageReactions` evidence for every message, including zero reactions.
-7. After every five completed conversations, save the whole capture and record
-   checkpoint phase `conversations`.
+6. Open conversations in separate batches of at most five per DevTools
+   evaluation. Reverse-scroll `#reactConversationMessages` until a page shorter
+   than 20 arrives. Exact multiples require the extra empty or short request.
+   Require explicit `MessageReactions` evidence for every message, including
+   zero reactions.
+7. After each full five-conversation batch, return control, save the whole
+   capture, and record checkpoint phase `conversations` before starting the
+   next batch.
 8. Require captured detail IDs to equal active plus archived list IDs. Set
    `capturedAt` and save the finalized exact capture; record checkpoint phase
    `complete`.

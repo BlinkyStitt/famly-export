@@ -7,16 +7,23 @@ import test from "node:test";
 
 import {
   acquireRunLock,
+  capturePrompt,
   chromeProfilePath,
   exactMcpTomlSection,
   invokeCodexCapture,
+  obsoleteViewerPaths,
   openViewerFromStdin,
   publishStagedExport,
   replaceMcpTomlSection,
+  selectResumableCheckpoint,
   seedVerifiedMedia,
   stopManagedViewer,
   validateExistingChromeListener,
 } from "../scripts/run-export.mjs";
+import {
+  prepareCapture,
+  recordCheckpoint,
+} from "../scripts/secure-capture.mjs";
 
 function privateFile(target, value) {
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -76,6 +83,55 @@ test("port reuse requires one exact dedicated Chrome process", () => {
     () => validateExistingChromeListener(profile, { pids: [] }),
     /exactly one listener/,
   );
+});
+
+test("capture instructions require externally persisted five-conversation batches", () => {
+  const prompt = capturePrompt({
+    capturePath: "/private/tmp/famly-capture-test/captured-export.json",
+  });
+  assert.match(prompt, /separate batches of at most five/i);
+  assert.match(prompt, /return control.*record the conversations checkpoint/is);
+  assert.match(
+    prompt,
+    /Never process more than five conversations in one evaluate_script call/,
+  );
+});
+
+test("completed captures refresh stale URLs while partial captures remain resumable", () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-complete-retry-test-"),
+  );
+  const capturePath = prepareCapture({ temporaryRoot });
+  const value = {
+    schemaVersion: 2,
+    capturedAt: "2026-07-26T00:10:00Z",
+    feedPages: [{ data: { feedItems: [{ feedItemId: "post-1" }] } }],
+    workflow: {
+      home: { stableBottomChecks: 8 },
+      lists: {
+        active: { showMoreExhausted: true },
+        archived: { showMoreExhausted: true },
+      },
+      conversations: {},
+    },
+  };
+  try {
+    fs.writeFileSync(capturePath, JSON.stringify(value), { mode: 0o600 });
+    recordCheckpoint(capturePath, "complete", { temporaryRoot });
+    assert.equal(selectResumableCheckpoint({ temporaryRoot }), null);
+    assert.ok(!fs.existsSync(path.dirname(capturePath)));
+
+    const partialPath = prepareCapture({ temporaryRoot });
+    fs.writeFileSync(partialPath, JSON.stringify(value), { mode: 0o600 });
+    recordCheckpoint(partialPath, "home", { temporaryRoot });
+    assert.equal(
+      selectResumableCheckpoint({ temporaryRoot })?.path,
+      partialPath,
+    );
+    assert.ok(fs.existsSync(partialPath));
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("run lock rejects a live owner and replaces only a dead owner", () => {
@@ -174,7 +230,7 @@ test("structured capture failures report the exact phase and remain nonzero", as
   }
 });
 
-test("publication failure restores all prior authoritative files", () => {
+test("publication recovery restores obsolete viewer files and retry removes them", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "famly-publish-root-"));
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "famly-publish-stage-"));
   const media = [
@@ -199,11 +255,18 @@ test("publication failure restores all prior authoritative files", () => {
     }
     privateFile(path.join(stage, "metadata/media.json"), JSON.stringify(media));
     privateFile(path.join(stage, "photos/new.jpg"), "new image");
+    const obsoletePath = path.join(root, "messages/old-conversation.html");
+    privateFile(obsoletePath, "old private conversation viewer");
+    assert.deepEqual(obsoleteViewerPaths(root), [
+      "messages/old-conversation.html",
+    ]);
     assert.throws(
       () =>
         publishStagedExport(stage, root, {
-          injectFailure(index) {
-            if (index === 3) throw new Error("injected");
+          injectFailure(_index, relativePath) {
+            if (relativePath === "messages/old-conversation.html") {
+              throw new Error("injected");
+            }
           },
         }),
       /injected/,
@@ -213,7 +276,19 @@ test("publication failure restores all prior authoritative files", () => {
       "old:metadata/posts.json",
     );
     assert.ok(!fs.existsSync(path.join(root, "photos/new.jpg")));
+    assert.equal(
+      fs.readFileSync(obsoletePath, "utf8"),
+      "old private conversation viewer",
+    );
     assert.ok(!fs.existsSync(path.join(root, ".famly-export-transaction.json")));
+
+    publishStagedExport(stage, root);
+    assert.ok(!fs.existsSync(obsoletePath));
+    assert.deepEqual(obsoleteViewerPaths(root), []);
+    assert.equal(
+      fs.readFileSync(path.join(root, "metadata/posts.json"), "utf8"),
+      "new:metadata/posts.json",
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(stage, { recursive: true, force: true });

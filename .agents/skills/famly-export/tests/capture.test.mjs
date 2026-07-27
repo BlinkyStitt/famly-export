@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   conversationCheckpointDue,
+  discardCompletedCheckpoint,
   finalizeCapture,
   latestValidCheckpoint,
   prepareCapture,
@@ -235,4 +236,44 @@ test("conversation progress checkpoints are due every five completions", () => {
   assert.equal(conversationCheckpointDue(5), true);
   assert.equal(conversationCheckpointDue(10), true);
   assert.equal(conversationCheckpointDue(11), false);
+});
+
+test("only a validated complete checkpoint can be securely discarded", () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-discard-complete-test-"),
+  );
+  const completePath = prepareCapture({ temporaryRoot });
+  const partialPath = prepareCapture({ temporaryRoot });
+  const value = {
+    schemaVersion: 2,
+    capturedAt: "2026-07-26T00:10:00Z",
+    feedPages: [{ data: { feedItems: [{ feedItemId: "post-1" }] } }],
+    workflow: {
+      home: { stableBottomChecks: 8 },
+      lists: {
+        active: { showMoreExhausted: true },
+        archived: { showMoreExhausted: true },
+      },
+      conversations: {},
+    },
+  };
+  try {
+    fs.writeFileSync(completePath, JSON.stringify(value), { mode: 0o600 });
+    recordCheckpoint(completePath, "complete", { temporaryRoot });
+    assert.equal(
+      discardCompletedCheckpoint(completePath, { temporaryRoot }),
+      true,
+    );
+    assert.ok(!fs.existsSync(path.dirname(completePath)));
+
+    fs.writeFileSync(partialPath, JSON.stringify(value), { mode: 0o600 });
+    recordCheckpoint(partialPath, "home", { temporaryRoot });
+    assert.throws(
+      () => discardCompletedCheckpoint(partialPath, { temporaryRoot }),
+      /Only a completed capture checkpoint may be discarded/,
+    );
+    assert.ok(fs.existsSync(partialPath));
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });

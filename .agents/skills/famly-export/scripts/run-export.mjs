@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { buildExport } from "./build-export.mjs";
 import {
+  discardCompletedCheckpoint,
   latestValidCheckpoint,
   prepareCapture,
   recordCheckpoint,
@@ -358,6 +359,7 @@ export function capturePrompt({ capturePath, resumePath = null }) {
     "Capture the complete authenticated Famly Home and Messages export using the tracked capture hook and required equality/terminal-page/reaction checks.",
     `Save owner-only schema-2 checkpoints by overwriting this exact prepared path after Home, after both conversation lists, and after each five completed conversations: ${capturePath}`,
     `After every checkpoint save run: node ${path.join(SCRIPT_ROOT, "secure-capture.mjs")} checkpoint ${capturePath} <home|conversation-lists|conversations>`,
+    "Process conversations in separate batches of at most five. After each full batch, return control, save the whole capture with evaluate_script.filePath, and record the conversations checkpoint before starting another batch. Never process more than five conversations in one evaluate_script call.",
     resumePath
       ? `Resume the valid capture state from ${resumePath}; merge it into the installed page hook before continuing, without redoing completed conversation work.`
       : "Start a new capture.",
@@ -365,6 +367,23 @@ export function capturePrompt({ capturePath, resumePath = null }) {
     "On failure, leave the newest valid checkpoint in place and return the failure contract with the exact phase and error.",
     "Do not inspect headers, cookies, storage, credentials, profile files, or any browser other than famly-chrome.",
   ].join("\n");
+}
+
+export function selectResumableCheckpoint({
+  temporaryRoot = os.tmpdir(),
+  now = Date.now(),
+  maxAgeMs = CAPTURE_MAX_AGE_MS,
+} = {}) {
+  const checkpoint = latestValidCheckpoint({
+    temporaryRoot,
+    now,
+    maxAgeMs,
+  });
+  if (checkpoint?.phase === "complete") {
+    discardCompletedCheckpoint(checkpoint.path, { temporaryRoot });
+    return null;
+  }
+  return checkpoint;
 }
 
 async function runChild(
@@ -537,6 +556,21 @@ function isSafePublicationPath(relativePath) {
   );
 }
 
+export function obsoleteViewerPaths(root = REPOSITORY_ROOT) {
+  root = canonicalExportRoot(root);
+  const messagesRoot = path.join(root, "messages");
+  if (!fs.existsSync(messagesRoot)) return [];
+  inspectPrivatePath(root, messagesRoot, { expectedType: "directory" });
+  const obsolete = [];
+  for (const entry of fs.readdirSync(messagesRoot, { withFileTypes: true })) {
+    if (entry.name === "index.html" || !entry.name.endsWith(".html")) continue;
+    const target = path.join(messagesRoot, entry.name);
+    inspectPrivatePath(root, target, { expectedType: "file" });
+    obsolete.push(path.posix.join("messages", entry.name));
+  }
+  return obsolete.sort();
+}
+
 export function recoverPublication(root = REPOSITORY_ROOT) {
   root = canonicalExportRoot(root);
   const journalPath = path.join(root, JOURNAL_NAME);
@@ -561,7 +595,12 @@ export function recoverPublication(root = REPOSITORY_ROOT) {
     ) ||
     !Array.isArray(journal.created) ||
     !Array.isArray(journal.replaced) ||
-    ![...journal.created, ...journal.replaced].every(isSafePublicationPath)
+    (journal.deleted !== undefined && !Array.isArray(journal.deleted)) ||
+    ![
+      ...journal.created,
+      ...journal.replaced,
+      ...(journal.deleted ?? []),
+    ].every(isSafePublicationPath)
   ) {
     fail("Famly export publication journal is invalid");
   }
@@ -574,7 +613,10 @@ export function recoverPublication(root = REPOSITORY_ROOT) {
       fs.unlinkSync(target);
     }
   }
-  for (const relativePath of journal.replaced ?? []) {
+  for (const relativePath of [
+    ...(journal.replaced ?? []),
+    ...(journal.deleted ?? []),
+  ]) {
     const backup = path.join(backupRoot, ...relativePath.split("/"));
     const target = path.join(root, ...relativePath.split("/"));
     if (fs.existsSync(backup)) {
@@ -622,10 +664,17 @@ export function publishStagedExport(
       }),
     ...AUTHORITATIVE_PATHS,
   ];
+  const obsoletePaths = obsoleteViewerPaths(root);
   const backupDirectory = `${TRANSACTION_PREFIX}${crypto.randomBytes(12).toString("hex")}`;
   const backupRoot = path.join(root, backupDirectory);
   fs.mkdirSync(backupRoot, { mode: PRIVATE_DIRECTORY_MODE });
-  const journal = { version: 1, backupDirectory, replaced: [], created: [] };
+  const journal = {
+    version: 1,
+    backupDirectory,
+    replaced: [],
+    created: [],
+    deleted: [],
+  };
   try {
     for (const relativePath of relativePaths) {
       const source = path.join(stageRoot, ...relativePath.split("/"));
@@ -642,6 +691,13 @@ export function publishStagedExport(
       } else {
         journal.created.push(relativePath);
       }
+    }
+    for (const relativePath of obsoletePaths) {
+      const target = path.join(root, ...relativePath.split("/"));
+      inspectPrivatePath(root, target, { expectedType: "file" });
+      const backup = path.join(backupRoot, ...relativePath.split("/"));
+      copyPrivateFile(target, backup);
+      journal.deleted.push(relativePath);
     }
     atomicWritePrivate(
       root,
@@ -661,6 +717,12 @@ export function publishStagedExport(
         path.join(stageRoot, ...relativePath.split("/")),
         path.join(root, ...relativePath.split("/")),
       );
+      injectFailure?.(++index, relativePath);
+    }
+    for (const relativePath of obsoletePaths) {
+      const target = path.join(root, ...relativePath.split("/"));
+      inspectPrivatePath(root, target, { expectedType: "file" });
+      fs.unlinkSync(target);
       injectFailure?.(++index, relativePath);
     }
     fs.unlinkSync(path.join(root, JOURNAL_NAME));
@@ -742,7 +804,7 @@ export async function main() {
   let lock;
   let stageRoot;
   let viewer;
-  let completedCaptureDirectory = null;
+  let completedCapturePath = null;
   let phase = "startup";
   const abortController = new AbortController();
   let resolveSignal;
@@ -766,9 +828,8 @@ export async function main() {
     await promptForSignIn(abortController.signal);
 
     phase = "capture";
-    const checkpoint = latestValidCheckpoint();
+    const checkpoint = selectResumableCheckpoint();
     const capturePath = checkpoint?.path ?? prepareCapture();
-    completedCaptureDirectory = path.dirname(capturePath);
     stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "famly-export-stage-"));
     fs.chmodSync(stageRoot, PRIVATE_DIRECTORY_MODE);
     await invokeCodexCapture({
@@ -780,7 +841,7 @@ export async function main() {
           : null,
       signal: abortController.signal,
     });
-    recordCheckpoint(capturePath, "complete");
+    completedCapturePath = capturePath;
     ensurePrivateDirectory(stageRoot, path.join(stageRoot, "metadata"));
     const stagedCapture = path.join(stageRoot, "metadata", "captured-export.json");
     fs.copyFileSync(capturePath, stagedCapture);
@@ -810,12 +871,9 @@ export async function main() {
 
     phase = "publication";
     publishStagedExport(stageRoot, root);
-    if (
-      completedCaptureDirectory &&
-      fs.existsSync(completedCaptureDirectory)
-    ) {
-      removeOwnedPrivateTree(completedCaptureDirectory);
-      completedCaptureDirectory = null;
+    if (completedCapturePath && fs.existsSync(completedCapturePath)) {
+      discardCompletedCheckpoint(completedCapturePath);
+      completedCapturePath = null;
     }
     phase = "viewer startup";
     stopManagedViewer();
@@ -834,6 +892,18 @@ export async function main() {
     process.off("SIGTERM", handleSignal);
     if (viewer) {
       await viewer.close().catch(() => {});
+    }
+    if (completedCapturePath && fs.existsSync(completedCapturePath)) {
+      try {
+        discardCompletedCheckpoint(completedCapturePath);
+      } catch (error) {
+        console.error(
+          `Failed to discard completed capture checkpoint: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        process.exitCode = 1;
+      }
     }
     if (stageRoot && fs.existsSync(stageRoot)) {
       removeOwnedPrivateTree(stageRoot);

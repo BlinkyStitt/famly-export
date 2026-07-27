@@ -16,6 +16,11 @@ function mode(target) {
   return fs.statSync(target).mode & 0o777;
 }
 
+function privateFile(target, value) {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, value, { mode: 0o600 });
+}
+
 function manifestEntry(overrides = {}) {
   const entry = {
     mediaId: "image-1",
@@ -181,6 +186,20 @@ test("worker resumes partials, skips complete files, and rejects symlink targets
     );
   } finally {
     fs.rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("an empty media manifest fails closed as a capture regression", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "famly-empty-media-test-"));
+  const manifestPath = path.join(root, "metadata", "media.json");
+  try {
+    privateFile(manifestPath, "[]");
+    assert.throws(
+      () => downloadManifestIndex(manifestPath, root, 0),
+      /Media manifest must be a nonempty array/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

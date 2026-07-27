@@ -36,9 +36,9 @@ The command:
 
 1. checks tools, disk space, private ownership, and concurrent-run safety;
 2. installs or repairs the pinned, hardened `famly-chrome` integration;
-3. opens a visible Chrome window using a dedicated profile under the current
-   user's home directory;
-4. waits while you sign in to Famly yourself and open **Home**;
+3. opens or reuses a visible Chrome window using a dedicated app profile under
+   the current user's home directory, never the ordinary Chrome profile;
+4. waits while you sign in to Famly yourself if needed and open **Home**;
 5. captures or resumes Home and complete active and archived Messages;
 6. preserves records no longer visible in the latest refresh;
 7. downloads or repairs missing media and verifies every attachment;
@@ -50,8 +50,10 @@ Press **Control-C** in Terminal to stop the managed viewer.
 
 If capture, download, integrity validation, or publication fails, the command
 exits nonzero, reports the failed phase, leaves the previous authoritative
-export untouched, preserves a private capture checkpoint for a retry, and does
-not open the viewer.
+export untouched, and does not open the viewer. Partial capture checkpoints are
+preserved for a retry. Once capture has completed, any later failure discards
+that completed checkpoint so the next run performs a fresh capture with fresh
+signed media URLs.
 
 ## Scope
 
@@ -75,7 +77,8 @@ are deliberately excluded and counted as excluded UI assets.
 
 The exporter fails rather than silently omitting a recognized content
 attachment with an unsupported type, host, missing identifier, or failed
-download.
+download. A zero-entry media manifest also fails closed because it almost always
+indicates a capture regression.
 
 ## Archival behavior
 

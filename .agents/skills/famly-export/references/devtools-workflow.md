@@ -446,8 +446,11 @@ async () => {
 }
 ```
 
-Run this as one long operation and wait for its exit result. Do not poll
-process state or start a duplicate operation.
+Run exactly one bounded batch at a time and wait for its exit result. Each
+evaluation processes at most five unfinished conversations. Do not poll process
+state or start a duplicate operation. Return control to Codex after every batch
+so the browser state can be saved to the runner-provided path and checkpointed
+before another batch starts.
 
 ```js
 async () => {
@@ -456,9 +459,23 @@ async () => {
     throw new Error("Famly response capture is unavailable");
   }
   const conversationIds = [
-    ...capture.workflow.lists.active.conversationIds,
-    ...capture.workflow.lists.archived.conversationIds,
+    ...new Set([
+      ...capture.workflow.lists.active.conversationIds,
+      ...capture.workflow.lists.archived.conversationIds,
+    ]),
   ];
+  const completedBefore = new Set(
+    Object.keys(capture.workflow.conversations ?? {}),
+  );
+  const unexpectedCompletedIds = [...completedBefore].filter(
+    (conversationId) => !conversationIds.includes(conversationId),
+  );
+  if (unexpectedCompletedIds.length > 0) {
+    throw new Error("Completed conversation IDs are absent from the lists");
+  }
+  const batchConversationIds = conversationIds
+    .filter((conversationId) => !completedBefore.has(conversationId))
+    .slice(0, 5);
   const waitFor = async (predicate, message, timeout = 15000) => {
     const started = Date.now();
     while (Date.now() - started < timeout) {
@@ -475,7 +492,7 @@ async () => {
       (page) => page.data?.conversationId === conversationId,
     );
 
-  for (const conversationId of conversationIds) {
+  for (const conversationId of batchConversationIds) {
     const beforeOpen = pagesFor(conversationId).length;
     globalThis.location.hash =
       `#/account/inbox?conversationId=${encodeURIComponent(conversationId)}`;
@@ -546,6 +563,10 @@ async () => {
     };
   }
 
+  const completedIds = Object.keys(capture.workflow.conversations ?? {});
+  const remainingConversationIds = conversationIds.filter(
+    (conversationId) => !completedIds.includes(conversationId),
+  );
   const capturedIds = [
     ...new Set(
       capture.conversationPages
@@ -554,16 +575,21 @@ async () => {
     ),
   ];
   if (
-    capturedIds.length !== conversationIds.length ||
-    conversationIds.some((id) => !capturedIds.includes(id))
+    remainingConversationIds.length === 0 &&
+    (capturedIds.length !== conversationIds.length ||
+      conversationIds.some((id) => !capturedIds.includes(id)))
   ) {
     throw new Error(
       "Captured conversation IDs do not equal active plus archived IDs",
     );
   }
   return {
-    conversations: conversationIds.length,
-    capturedConversations: capturedIds.length,
+    batchConversationIds,
+    completedConversations: completedIds.length,
+    remainingConversations: remainingConversationIds.length,
+    checkpointDue:
+      completedIds.length > 0 && completedIds.length % 5 === 0,
+    complete: remainingConversationIds.length === 0,
     messagePages: capture.conversationPages.length,
     reactionPages: capture.reactionPages.length,
   };
@@ -573,15 +599,16 @@ async () => {
 The extra empty or short request after an exact multiple of 20 messages is
 intentional and required completeness evidence. Do not advance to the next
 conversation until `MessageReactions` contains an explicit entry for every
-captured message ID, including zero-reaction entries.
+captured message ID, including zero-reaction entries. Never process a sixth
+conversation in the same evaluation.
 
 ## 9. Save response bodies, checkpoints, and workflow evidence
 
 The one-command runner supplies the only permitted absolute OS-temporary save
 path. Do not prepare a second path. After Home, after both conversation lists,
-and after each five completed conversations, wait one second for cloned
-response bodies and save this exact object with `evaluate_script.filePath` set
-to that path:
+and after each full five-conversation batch, wait one second for cloned response
+bodies and save this exact object with `evaluate_script.filePath` set to that
+path:
 
 ```js
 async () => {
@@ -612,6 +639,13 @@ node .agents/skills/famly-export/scripts/secure-capture.mjs checkpoint \
   '<runner-provided-temp-path>' \
   '<home|conversation-lists|conversations|complete>'
 ```
+
+Whenever a conversation batch reports `checkpointDue: true`, including a final
+full batch, save the capture and record phase `conversations`. If it also
+reports `remainingConversations` above zero, only then run the next bounded
+batch from section 8. When the final batch reports `complete: true`, proceed to
+the final equality checks and complete checkpoint. A final partial batch does
+not need an intermediate `conversations` checkpoint.
 
 This file contains the selected response bodies and browser-completeness
 evidence only. It contains no deliberately captured request headers, request

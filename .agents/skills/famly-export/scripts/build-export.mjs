@@ -1195,17 +1195,6 @@ export function buildExport(capturePath, outputRoot, { previousRoot = null } = {
     path.join(messagesRoot, "viewer-app.mjs"),
     result.html.app,
   );
-  for (const entry of fs.readdirSync(messagesRoot, { withFileTypes: true })) {
-    if (
-      entry.isFile() &&
-      entry.name !== "index.html" &&
-      entry.name.endsWith(".html")
-    ) {
-      const obsoletePath = path.join(messagesRoot, entry.name);
-      inspectPrivatePath(canonicalRoot, obsoletePath, { expectedType: "file" });
-      fs.unlinkSync(obsoletePath);
-    }
-  }
   hardenPrivateTrees(canonicalRoot);
   const markerFiles = credentialMarkerFiles(canonicalRoot);
   assert(

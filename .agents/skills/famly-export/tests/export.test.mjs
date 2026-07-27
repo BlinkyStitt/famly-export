@@ -369,10 +369,6 @@ test("build writes a fixed manifest-backed viewer shell without private records"
   const capturePath = path.join(outputRoot, "captured.json");
   const messagesRoot = path.join(outputRoot, "messages");
   fs.mkdirSync(messagesRoot);
-  fs.writeFileSync(
-    path.join(messagesRoot, "obsolete-conversation.html"),
-    "obsolete",
-  );
   fs.writeFileSync(capturePath, JSON.stringify(fixtureCapture()));
   const summary = buildExport(capturePath, outputRoot);
 

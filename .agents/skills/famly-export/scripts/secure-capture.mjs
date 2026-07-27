@@ -250,6 +250,42 @@ export function latestValidCheckpoint({
   return latest;
 }
 
+export function discardCompletedCheckpoint(
+  capturePath,
+  { temporaryRoot = os.tmpdir() } = {},
+) {
+  const { absoluteCapturePath, capture, directory } = readPrivateCapture(
+    capturePath,
+    temporaryRoot,
+  );
+  const checkpointPath = path.join(directory, "checkpoint.json");
+  const checkpointStat = fs.lstatSync(checkpointPath);
+  if (
+    checkpointStat.isSymbolicLink() ||
+    !checkpointStat.isFile() ||
+    checkpointStat.uid !== currentUid()
+  ) {
+    throw new Error("Capture checkpoint must be a current-user owned regular file");
+  }
+  const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
+  if (checkpoint?.phase !== "complete") {
+    throw new Error("Only a completed capture checkpoint may be discarded");
+  }
+  validateCaptureObject(capture, { phase: "complete" });
+  const entries = fs.readdirSync(directory).sort();
+  if (
+    entries.length !== 2 ||
+    entries[0] !== CAPTURE_FILENAME ||
+    entries[1] !== "checkpoint.json"
+  ) {
+    throw new Error("Capture directory contains unexpected entries");
+  }
+  fs.unlinkSync(absoluteCapturePath);
+  fs.unlinkSync(checkpointPath);
+  fs.rmdirSync(directory);
+  return true;
+}
+
 export function finalizeCapture(
   capturePath,
   outputRoot,
