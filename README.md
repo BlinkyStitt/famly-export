@@ -66,15 +66,45 @@ navigate to, fetch, probe, or otherwise load it.
 Ordinary HTTP(S) links in bodies remain clickable and are not downloaded.
 Only explicit Famly-hosted attachment fields enter `media.json`.
 
-## Requirements
+## One-time setup
 
-- macOS, Google Chrome, Node.js, and `npx`.
-- `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`, `grep`, `lsof`, and
-  native `/usr/bin/ditto`.
-- Enough local disk for all original media.
+You need a Mac and enough free disk space for all original photos and videos.
+Everything else that is not already included with macOS is listed in the
+`Brewfile`.
 
-No Python, dependency installation, HAR, or browser-profile inspection is
-required for the known workflow.
+1. Open **Terminal**.
+2. If `brew --version` says that Homebrew is not installed, copy and run the
+   install command from [brew.sh](https://brew.sh/). The installer explains
+   what it will do and pauses before making changes.
+3. Change into this repository's folder. An easy way is to type `cd ` (with a
+   space after it), drag the folder from Finder into Terminal, and press
+   **Return**. Then install the missing tools:
+
+   ```sh
+   brew bundle
+   ```
+
+   This installs Google Chrome, the Codex CLI, Node.js (including `npx`), and
+   `jq`. Homebrew skips anything that is already installed.
+
+4. Sign in to Codex:
+
+   ```sh
+   codex login
+   ```
+
+5. Confirm the command-line tools are ready:
+
+   ```sh
+   codex --version
+   node --version
+   npx --version
+   jq --version
+   ```
+
+macOS already provides `curl`, `xargs`, `file`, `shasum`, `sips`, `find`,
+`grep`, `lsof`, and `/usr/bin/ditto`. No Python, separate project dependency
+installation, HAR, or browser-profile inspection is required.
 
 ## 1. Launch the dedicated Famly Chrome profile
 
