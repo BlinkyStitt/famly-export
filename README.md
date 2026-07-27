@@ -188,39 +188,11 @@ Verified media and historical records are retained across refreshes, so the
 backup grows over time. A newer record with the same Famly identifier replaces
 the older version; separate revisions of edited records are not kept.
 
-## Advanced troubleshooting and development
+## Contributing
 
-`./famly-export` is the supported command. The scripts under
-`.agents/skills/famly-export/scripts/` are internal implementation phases.
-
-Useful read-only checks:
-
-```sh
-codex mcp get famly-chrome
-lsof -nP -iTCP:9223 -sTCP:LISTEN
-lsof -nP -iTCP:4173 -sTCP:LISTEN
-```
-
-The exporter installs or repairs its own pinned, hardened `famly-chrome`
-configuration. It uses a dedicated browser profile at:
-
-```text
-${HOME}/Library/Application Support/Famly Export Chrome
-```
-
-It never attaches to your ordinary Chrome profile.
-
-Run the complete local test suite:
-
-```sh
-node --test .agents/skills/famly-export/tests/*.test.mjs
-bash -n .agents/skills/famly-export/scripts/download-media.sh
-bash -n .agents/skills/famly-export/scripts/launch-famly-chrome.sh
-node --check .agents/skills/famly-export/scripts/run-export.mjs
-```
-
-Set `FAMLY_REAL_CHROME_E2E=1` on macOS to include the real-Chrome fixture. Tests
-and fixtures contain no private export records or credentials.
+Implementation details, local test instructions, and troubleshooting checks are
+in [CONTRIBUTING.md](CONTRIBUTING.md). AI coding agents must also follow
+[AGENTS.md](AGENTS.md).
 
 ## License
 
