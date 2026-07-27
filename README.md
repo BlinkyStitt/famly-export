@@ -184,3 +184,14 @@ bash -n .agents/skills/famly-export/scripts/launch-famly-chrome.sh
 
 Set `FAMLY_REAL_CHROME_E2E=1` on macOS to include the real-Chrome fixture.
 Tests and fixtures contain no private export records or credentials.
+
+## License
+
+Copyright © 2026 Famly Export contributors.
+
+This project is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License or (at your option) any later
+version. See [LICENSE](LICENSE).
+
+SPDX license expression: `GPL-3.0-or-later`.
