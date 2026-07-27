@@ -146,6 +146,16 @@
       padding-left: .8rem;
     }
     .reaction-summary { font-size: .9rem; margin-top: .5rem; opacity: .75; }
+    .message-details > summary {
+      cursor: pointer;
+      font-weight: 700;
+      margin-top: .6rem;
+    }
+    .message-details[open] > summary { margin-bottom: .5rem; }
+    .message-details > summary:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
     .favorites-footer {
       align-items: center;
       backdrop-filter: blur(12px);

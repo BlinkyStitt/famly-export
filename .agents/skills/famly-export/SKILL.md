@@ -211,6 +211,11 @@ Render manifest-listed MP4 videos inline through the browser's native controls
 with metadata-only preload, inline playback, byte-range seeking, and a link to
 the untouched original video.
 
+Keep Message sender, timestamp, and conversation context visible. Put each
+Message body and its attachments in a native disclosure control that starts
+open only when safe manifest media contains an image or MP4 video; text-only
+and nonvisual file-only Messages start collapsed.
+
 Favorites ZIPs use an additional 192-bit one-time token, `0700` directories,
 `0600` ZIPs, expiry, signal cleanup, and startup deletion of current-user
 `famly-favorites-*` remnants older than one hour. Archive URLs must match the

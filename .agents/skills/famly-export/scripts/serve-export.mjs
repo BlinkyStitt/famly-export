@@ -574,7 +574,11 @@ export function createExportServer({
               MIME_TYPES.get(path.extname(mediaEntry.relativePath).toLowerCase()) ||
               "application/octet-stream",
             {},
-            { allowRanges: mediaEntry.kind === "video" },
+            {
+              allowRanges:
+                mediaEntry.kind === "video" ||
+                mediaEntry.expectedMime === "video/mp4",
+            },
           );
           return;
         }

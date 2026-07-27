@@ -513,7 +513,7 @@ function renderFavoriteImage(
 }
 
 export function renderInlineVideo(documentObject, entry, accessPrefix) {
-  if (entry?.kind !== "video") {
+  if (entry?.kind !== "video" && entry?.expectedMime !== "video/mp4") {
     return null;
   }
   const href = safeLocalMediaHref(entry, accessPrefix);
@@ -540,6 +540,24 @@ export function renderInlineVideo(documentObject, entry, accessPrefix) {
   caption.append(originalLink);
   figure.append(video, caption);
   return figure;
+}
+
+export function messageDisclosureState(entries) {
+  const supported = asArray(entries).filter(isAllowedMediaRecord);
+  if (
+    supported.some(
+      (entry) =>
+        entry.kind === "image" ||
+        entry.kind === "video" ||
+        entry.expectedMime === "video/mp4",
+    )
+  ) {
+    return { open: true, label: "Image or video message" };
+  }
+  if (supported.length > 0) {
+    return { open: false, label: "Message with file attachment" };
+  }
+  return { open: false, label: "Text message" };
 }
 
 function renderAttachments(
@@ -578,7 +596,7 @@ function renderAttachments(
         imageGrid.append(image);
         images += 1;
       }
-    } else if (entry.kind === "video") {
+    } else if (entry.kind === "video" || entry.expectedMime === "video/mp4") {
       const video = renderInlineVideo(documentObject, entry, accessPrefix);
       if (video) {
         videoGrid.append(video);
@@ -761,20 +779,37 @@ function renderMessage(
   }
   const body = element(documentObject, "div", "entry-body");
   appendLinkifiedText(documentObject, body, message?.body);
-  article.append(label, header, context, body);
+  const messageMedia = mediaForOwner(
+    mediaIndex,
+    "message",
+    message?.messageId,
+  );
+  const disclosureState = messageDisclosureState(messageMedia);
+  const disclosure = element(documentObject, "details", "message-details");
+  disclosure.open = disclosureState.open;
+  disclosure.append(
+    element(
+      documentObject,
+      "summary",
+      "message-summary",
+      disclosureState.label,
+    ),
+    body,
+  );
+  article.append(label, header, context, disclosure);
   const attachments = renderAttachments(
     documentObject,
-    mediaForOwner(mediaIndex, "message", message?.messageId),
+    messageMedia,
     favorites,
     registerUpdater,
     accessPrefix,
   );
   if (attachments) {
-    article.append(attachments);
+    disclosure.append(attachments);
   }
   const reactionCount = Number(message?.reactionSummary?.count ?? 0);
   if (reactionCount > 0) {
-    article.append(
+    disclosure.append(
       element(
         documentObject,
         "div",

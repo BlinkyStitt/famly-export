@@ -292,6 +292,11 @@ Manifest-listed MP4 videos play inline with the browser's native controls,
 metadata-only preload, and byte-range seeking. Each player also retains a link
 to the untouched original video file.
 
+Message bodies start collapsed unless their safe manifest media includes an
+image or MP4 video. Sender, timestamp, and conversation context remain visible,
+and the native disclosure control can expand any text-only or file-only
+message.
+
 Favorites export stages hard links to originals in one flat
 `Famly Favorites/` directory, uses `ditto --norsrc`, issues a one-time
 192-bit URL, and cleans on download, expiry, signal, or a later startup after

@@ -10,6 +10,7 @@ import {
   consumeAccessToken,
   indexMedia,
   loadManifests,
+  messageDisclosureState,
   mediaIdentity,
   privateRoutePrefix,
   renderInlineVideo,
@@ -326,4 +327,64 @@ test("videos render inline with native browser controls and an original link", (
   assert.equal(caption.children[0].href, video.src);
   assert.equal(renderInlineVideo(fakeDocument, mediaEntry(), ACCESS_PREFIX), null);
   assert.equal(renderInlineVideo(fakeDocument, entry, "/_private/wrong"), null);
+});
+
+test("only messages with image or video media start expanded", () => {
+  const image = mediaEntry({
+    sourceType: "message",
+    ownerType: "message",
+    ownerId: "message-1",
+    conversationId: "conversation-1",
+    relativePath: "message-images/message-image.jpg",
+  });
+  const videoFile = mediaEntry({
+    mediaId: "message-video",
+    sourceType: "message",
+    ownerType: "message",
+    ownerId: "message-1",
+    conversationId: "conversation-1",
+    kind: "file",
+    expectedMime: "video/mp4",
+    relativePath:
+      "messages/attachments/conversation-1/message-video.mp4",
+    filename: "message-video.mp4",
+  });
+  const documentFile = mediaEntry({
+    mediaId: "message-file",
+    sourceType: "message",
+    ownerType: "message",
+    ownerId: "message-1",
+    conversationId: "conversation-1",
+    kind: "file",
+    expectedMime: "application/pdf",
+    relativePath:
+      "messages/attachments/conversation-1/message-file.pdf",
+    filename: "message-file.pdf",
+  });
+
+  assert.deepEqual(messageDisclosureState([]), {
+    open: false,
+    label: "Text message",
+  });
+  assert.deepEqual(messageDisclosureState([documentFile]), {
+    open: false,
+    label: "Message with file attachment",
+  });
+  assert.deepEqual(messageDisclosureState([image]), {
+    open: true,
+    label: "Image or video message",
+  });
+  assert.deepEqual(messageDisclosureState([videoFile]), {
+    open: true,
+    label: "Image or video message",
+  });
+  assert.deepEqual(
+    messageDisclosureState([
+      mediaEntry({
+        mediaId: "unsafe",
+        relativePath: "../unsafe.jpg",
+      }),
+    ]),
+    { open: false, label: "Text message" },
+  );
 });

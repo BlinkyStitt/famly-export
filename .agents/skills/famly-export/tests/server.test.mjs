@@ -261,9 +261,13 @@ test("manifest-listed videos support native browser byte ranges", async () => {
   const fixture = fixtureRoot();
   const video = fixtureEntry({
     mediaId: "home-video",
-    kind: "video",
+    sourceType: "message",
+    ownerType: "message",
+    ownerId: "message-video",
+    conversationId: "conversation-1",
+    kind: "file",
     expectedMime: "video/mp4",
-    relativePath: "videos/2026/video.mp4",
+    relativePath: "messages/attachments/conversation-1/video.mp4",
     filename: "video.mp4",
   });
   const entries = [...fixture.entries, video];
@@ -271,7 +275,7 @@ test("manifest-listed videos support native browser byte ranges", async () => {
     path.join(fixture.root, "metadata", "media.json"),
     `${JSON.stringify(entries)}\n`,
   );
-  fs.mkdirSync(path.join(fixture.root, "videos", "2026"), {
+  fs.mkdirSync(path.dirname(path.join(fixture.root, video.relativePath)), {
     recursive: true,
   });
   fs.writeFileSync(
