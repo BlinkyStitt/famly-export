@@ -189,4 +189,4 @@ node --check .agents/skills/famly-export/scripts/run-export.mjs
 ```
 
 Private output remains ignored and uncommitted. Only the runner, skill code,
-tests, CI, and documentation belong in Git.
+tests, and documentation belong in Git.
