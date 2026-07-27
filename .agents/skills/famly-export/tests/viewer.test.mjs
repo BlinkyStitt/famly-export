@@ -3,15 +3,21 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  ACCESS_SESSION_KEY,
   FAVORITES_STORAGE_KEY,
   FavoriteSelection,
   buildTimeline,
+  consumeAccessToken,
   indexMedia,
   loadManifests,
   mediaIdentity,
+  privateRoutePrefix,
   safeExternalUrl,
   safeLocalMediaHref,
 } from "../scripts/viewer-app.mjs";
+
+const ACCESS_TOKEN = "A".repeat(43);
+const ACCESS_PREFIX = `/_private/${ACCESS_TOKEN}`;
 
 function mediaEntry(overrides = {}) {
   const entry = {
@@ -135,25 +141,25 @@ test("favorite restoration intersects current media and persists stale removal",
 
 test("manifest loading reports missing and malformed inputs precisely", async () => {
   const values = new Map([
-    ["/metadata/posts.json", []],
-    ["/metadata/conversations.json", []],
-    ["/metadata/media.json", []],
-    ["/metadata/export-summary.json", {}],
+    [`${ACCESS_PREFIX}/metadata/posts.json`, []],
+    [`${ACCESS_PREFIX}/metadata/conversations.json`, []],
+    [`${ACCESS_PREFIX}/metadata/media.json`, []],
+    [`${ACCESS_PREFIX}/metadata/export-summary.json`, {}],
   ]);
   const fetchOk = async (url) => ({
     ok: true,
     status: 200,
     json: async () => values.get(url),
   });
-  const manifests = await loadManifests(fetchOk);
+  const manifests = await loadManifests(fetchOk, ACCESS_PREFIX);
   assert.deepEqual(manifests.posts, []);
 
   await assert.rejects(
     loadManifests(async (url) => ({
-      ok: url !== "/metadata/media.json",
+      ok: url !== `${ACCESS_PREFIX}/metadata/media.json`,
       status: 404,
       json: async () => values.get(url),
-    })),
+    }), ACCESS_PREFIX),
     /Could not load \/metadata\/media\.json \(HTTP 404\)/,
   );
   await assert.rejects(
@@ -161,10 +167,43 @@ test("manifest loading reports missing and malformed inputs precisely", async ()
       ok: true,
       status: 200,
       json: async () =>
-        url === "/metadata/posts.json" ? { unexpected: true } : values.get(url),
-    })),
+        url === `${ACCESS_PREFIX}/metadata/posts.json`
+          ? { unexpected: true }
+          : values.get(url),
+    }), ACCESS_PREFIX),
     /unexpected shape/,
   );
+  await assert.rejects(loadManifests(fetchOk, "/_private/not-a-token"), /access token/);
+});
+
+test("fragment access is validated, session-restored, and removed from history", () => {
+  const storage = new Map();
+  const historyCalls = [];
+  const windowObject = {
+    location: {
+      hash: `#access=${ACCESS_TOKEN}`,
+      pathname: "/",
+      search: "?view=all",
+    },
+    history: {
+      replaceState: (...args) => historyCalls.push(args),
+    },
+    sessionStorage: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    },
+  };
+  assert.equal(consumeAccessToken(windowObject), ACCESS_TOKEN);
+  assert.equal(storage.get(ACCESS_SESSION_KEY), ACCESS_TOKEN);
+  assert.deepEqual(historyCalls[0], [null, "", "/?view=all"]);
+  assert.equal(privateRoutePrefix(ACCESS_TOKEN), ACCESS_PREFIX);
+  assert.equal(privateRoutePrefix("short"), null);
+
+  windowObject.location.hash = "";
+  assert.equal(consumeAccessToken(windowObject), ACCESS_TOKEN);
+  windowObject.location.hash = "#access=unsafe";
+  assert.equal(consumeAccessToken(windowObject), ACCESS_TOKEN);
+  assert.equal(historyCalls.length, 2);
 });
 
 test("only HTTP(S) external links and safe manifest media paths are accepted", () => {
@@ -178,15 +217,21 @@ test("only HTTP(S) external links and safe manifest media paths are accepted", (
   assert.equal(safeExternalUrl("not a URL"), null);
 
   assert.equal(
-    safeLocalMediaHref(mediaEntry()),
-    "/photos/original%20image.jpg",
+    safeLocalMediaHref(mediaEntry(), ACCESS_PREFIX),
+    `${ACCESS_PREFIX}/photos/original%20image.jpg`,
   );
   assert.equal(
-    safeLocalMediaHref(mediaEntry({ relativePath: "../metadata/private.json" })),
+    safeLocalMediaHref(
+      mediaEntry({ relativePath: "../metadata/private.json" }),
+      ACCESS_PREFIX,
+    ),
     null,
   );
   assert.equal(
-    safeLocalMediaHref(mediaEntry({ relativePath: "metadata/media.json" })),
+    safeLocalMediaHref(
+      mediaEntry({ relativePath: "metadata/media.json" }),
+      ACCESS_PREFIX,
+    ),
     null,
   );
   assert.equal(
@@ -197,13 +242,18 @@ test("only HTTP(S) external links and safe manifest media paths are accepted", (
         kind: "image",
         relativePath: "message-images/wrong-root.jpg",
       }),
+      ACCESS_PREFIX,
     ),
     null,
   );
   assert.equal(
-    safeLocalMediaHref(mediaEntry({ expectedMime: "text/html" })),
+    safeLocalMediaHref(
+      mediaEntry({ expectedMime: "text/html" }),
+      ACCESS_PREFIX,
+    ),
     null,
   );
+  assert.equal(safeLocalMediaHref(mediaEntry(), "/_private/wrong"), null);
 });
 
 test("browser rendering uses original lazy images and accessible favorite controls", () => {

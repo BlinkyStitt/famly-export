@@ -11,6 +11,14 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import {
+  PRIVATE_DIRECTORY_MODE,
+  PRIVATE_FILE_MODE,
+  canonicalExportRoot,
+  hardenPrivateTrees,
+  inspectPrivatePath,
+  removeOwnedPrivateTree,
+} from "./private-tree.mjs";
+import {
   isAllowedMediaRecord,
   mediaIdentity,
 } from "./viewer-app.mjs";
@@ -20,7 +28,9 @@ const DEFAULT_PORT = 4173;
 const MAX_REQUEST_BYTES = 512 * 1024;
 const MAX_SELECTIONS = 5_000;
 const DEFAULT_ARCHIVE_TTL_MS = 15 * 60 * 1_000;
+const STALE_ARCHIVE_AGE_MS = 60 * 60 * 1_000;
 const HOST = "127.0.0.1";
+const ARCHIVE_PREFIX = "famly-favorites-";
 
 const MANIFEST_PATHS = new Map([
   ["/metadata/posts.json", "metadata/posts.json"],
@@ -68,12 +78,32 @@ function isImageRecord(entry) {
   );
 }
 
+function pathInsideRoot(root, relativePath) {
+  if (!isSafeRelativePath(relativePath)) {
+    throw new Error("Unsafe export path");
+  }
+  try {
+    return inspectPrivatePath(
+      root,
+      path.join(root, ...relativePath.split("/")),
+      { expectedType: "file" },
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw Object.assign(new Error("File not found"), { status: 404 });
+    }
+    throw error;
+  }
+}
+
 function manifestState(root) {
   const manifestPath = path.join(root, "metadata", "media.json");
   let cached = null;
   return () => {
-    const stat = fs.statSync(manifestPath);
-    const signature = `${stat.mtimeMs}:${stat.size}`;
+    const inspected = inspectPrivatePath(root, manifestPath, {
+      expectedType: "file",
+    });
+    const signature = `${inspected.stat.mtimeMs}:${inspected.stat.size}`;
     if (cached?.signature === signature) {
       return cached;
     }
@@ -82,7 +112,8 @@ function manifestState(root) {
       throw new Error("metadata/media.json must contain an array");
     }
     const byIdentity = new Map();
-    const byPublicPath = new Map();
+    const byPrivatePath = new Map();
+    const publicMedia = [];
     for (const entry of parsed) {
       const identity = mediaIdentity(entry);
       if (
@@ -91,52 +122,30 @@ function manifestState(root) {
         !isSafeRelativePath(entry.relativePath) ||
         !isAllowedMediaRecord(entry) ||
         byIdentity.has(identity) ||
-        byPublicPath.has(`/${entry.relativePath}`)
+        byPrivatePath.has(`/${entry.relativePath}`)
       ) {
         throw new Error("metadata/media.json contains an unsafe or duplicate record");
       }
       byIdentity.set(identity, entry);
-      byPublicPath.set(`/${entry.relativePath}`, entry);
+      byPrivatePath.set(`/${entry.relativePath}`, entry);
+      const projection = { ...entry };
+      delete projection.sourceUrl;
+      publicMedia.push(projection);
     }
-    cached = { signature, byIdentity, byPublicPath };
+    cached = { signature, byIdentity, byPrivatePath, publicMedia };
     return cached;
   };
 }
 
-function pathInsideRoot(root, relativePath) {
-  if (!isSafeRelativePath(relativePath)) {
-    throw new Error("Unsafe export path");
-  }
-  let realRoot;
-  let realTarget;
-  try {
-    realRoot = fs.realpathSync(root);
-    const target = path.join(realRoot, ...relativePath.split("/"));
-    realTarget = fs.realpathSync(target);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      throw Object.assign(new Error("File not found"), { status: 404 });
-    }
-    throw error;
-  }
-  const relative = path.relative(realRoot, realTarget);
-  if (
-    relative === "" ||
-    relative === ".." ||
-    relative.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relative)
-  ) {
-    throw new Error("Export path escapes the selected root");
-  }
-  const stat = fs.statSync(realTarget);
-  if (!stat.isFile()) {
-    throw new Error("Export path is not a regular file");
-  }
-  return { path: realTarget, stat };
-}
-
 function safeRequestPath(requestUrl) {
-  const rawPath = String(requestUrl ?? "").split("?")[0];
+  if (
+    typeof requestUrl !== "string" ||
+    !requestUrl.startsWith("/") ||
+    requestUrl.startsWith("//")
+  ) {
+    return null;
+  }
+  const rawPath = requestUrl.split("?")[0];
   let decoded;
   try {
     decoded = decodeURIComponent(rawPath);
@@ -159,22 +168,28 @@ function safeRequestPath(requestUrl) {
 
 function setSecurityHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
-  response.setHeader("Referrer-Policy", "same-origin");
+  response.setHeader("Referrer-Policy", "no-referrer");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), browsing-topics=()",
+  );
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   );
   response.setHeader("Cache-Control", "no-store");
 }
 
-function sendJson(response, statusCode, value) {
+function sendJson(response, statusCode, value, headOnly = false) {
   const body = `${JSON.stringify(value)}\n`;
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
   });
-  response.end(body);
+  response.end(headOnly ? undefined : body);
 }
 
 function sendError(response, statusCode, message) {
@@ -206,21 +221,21 @@ function streamFile(request, response, target, contentType, extraHeaders = {}) {
 function parsePort(value) {
   const port = Number(value ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-    throw new Error("Port must be an integer from 1 through 65535");
+    throw new Error("Port must be an integer from 0 through 65535");
   }
   return port;
 }
 
-function requestOrigin(request, port) {
+function requestOrigin(port) {
   return `http://${HOST}:${port}`;
 }
 
 function sameOriginPost(request, port) {
-  return request.headers.origin === requestOrigin(request, port);
+  return request.headers.origin === requestOrigin(port);
 }
 
 function sameOriginDownload(request, port) {
-  const expected = requestOrigin(request, port);
+  const expected = requestOrigin(port);
   if (typeof request.headers.origin === "string") {
     return request.headers.origin === expected;
   }
@@ -240,10 +255,7 @@ function sameOriginDownload(request, port) {
 function readJsonBody(request) {
   return new Promise((resolve, reject) => {
     const contentLength = Number(request.headers["content-length"]);
-    if (
-      Number.isFinite(contentLength) &&
-      contentLength > MAX_REQUEST_BYTES
-    ) {
+    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
       reject(Object.assign(new Error("Request body is too large"), { status: 413 }));
       request.resume();
       return;
@@ -310,17 +322,46 @@ async function runDitto(sourceDirectory, zipPath) {
   ]);
 }
 
-async function createArchive({
-  root,
-  entries,
-  createZip,
-}) {
-  const temporaryRoot = fs.mkdtempSync(
-    path.join(os.tmpdir(), "famly-favorites-"),
+export function sweepStaleArchiveDirectories({
+  temporaryRoot = os.tmpdir(),
+  now = Date.now(),
+  staleAgeMs = STALE_ARCHIVE_AGE_MS,
+} = {}) {
+  const root = fs.realpathSync(path.resolve(temporaryRoot));
+  let removed = 0;
+  for (const name of fs.readdirSync(root)) {
+    if (!name.startsWith(ARCHIVE_PREFIX)) {
+      continue;
+    }
+    const target = path.join(root, name);
+    let stat;
+    try {
+      stat = fs.lstatSync(target);
+    } catch {
+      continue;
+    }
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isDirectory() ||
+      stat.uid !== process.getuid() ||
+      now - stat.mtimeMs < staleAgeMs
+    ) {
+      continue;
+    }
+    removeOwnedPrivateTree(target);
+    removed += 1;
+  }
+  return removed;
+}
+
+async function createArchive({ root, entries, createZip, temporaryRoot }) {
+  const archiveRoot = fs.mkdtempSync(
+    path.join(temporaryRoot, ARCHIVE_PREFIX),
   );
-  const favoritesDirectory = path.join(temporaryRoot, "Famly Favorites");
-  const zipPath = path.join(temporaryRoot, "favorites.zip");
-  fs.mkdirSync(favoritesDirectory, { mode: 0o700 });
+  fs.chmodSync(archiveRoot, PRIVATE_DIRECTORY_MODE);
+  const favoritesDirectory = path.join(archiveRoot, "Famly Favorites");
+  const zipPath = path.join(archiveRoot, "favorites.zip");
+  fs.mkdirSync(favoritesDirectory, { mode: PRIVATE_DIRECTORY_MODE });
   try {
     const names = collisionSafeNames(entries);
     for (const entry of entries) {
@@ -330,12 +371,15 @@ async function createArchive({
         names.get(entry.identity),
       );
       fs.linkSync(source.path, destination);
+      fs.chmodSync(destination, PRIVATE_FILE_MODE);
     }
     await createZip(favoritesDirectory, zipPath);
+    inspectPrivatePath(archiveRoot, zipPath, { expectedType: "file" });
+    fs.chmodSync(zipPath, PRIVATE_FILE_MODE);
     fs.rmSync(favoritesDirectory, { recursive: true });
-    return { temporaryRoot, zipPath };
+    return { temporaryRoot: archiveRoot, zipPath };
   } catch (error) {
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    fs.rmSync(archiveRoot, { recursive: true, force: true });
     throw error;
   }
 }
@@ -345,10 +389,17 @@ export function createExportServer({
   port = DEFAULT_PORT,
   archiveTtlMs = DEFAULT_ARCHIVE_TTL_MS,
   createZip = runDitto,
+  temporaryRoot = os.tmpdir(),
 } = {}) {
-  const resolvedRoot = fs.realpathSync(path.resolve(root ?? "."));
+  const resolvedRoot = canonicalExportRoot(root ?? ".");
+  hardenPrivateTrees(resolvedRoot);
+  const resolvedTemporaryRoot = fs.realpathSync(path.resolve(temporaryRoot));
+  sweepStaleArchiveDirectories({ temporaryRoot: resolvedTemporaryRoot });
   const configuredPort = parsePort(port);
   const loadManifest = manifestState(resolvedRoot);
+  loadManifest();
+  const accessToken = crypto.randomBytes(32).toString("base64url");
+  const privatePrefix = `/_private/${accessToken}`;
   const archives = new Map();
   let archiveCreating = false;
   let activePort = configuredPort;
@@ -377,9 +428,14 @@ export function createExportServer({
   const server = http.createServer(async (request, response) => {
     setSecurityHeaders(response);
     expireArchives();
+
+    if (request.headers.host !== `${HOST}:${activePort}`) {
+      sendError(response, 400, "Invalid Host header");
+      return;
+    }
     const requestPath = safeRequestPath(request.url);
     if (!requestPath) {
-      sendError(response, 400, "Unsafe request path");
+      sendError(response, 400, "Unsafe request target");
       return;
     }
     if (request.method === "OPTIONS") {
@@ -415,20 +471,36 @@ export function createExportServer({
         );
         return;
       }
+
+      if (!requestPath.startsWith(`${privatePrefix}/`)) {
+        sendError(response, 404, "Not found");
+        return;
+      }
+      const privatePath = requestPath.slice(privatePrefix.length);
+
       if (
         (request.method === "GET" || request.method === "HEAD") &&
-        MANIFEST_PATHS.has(requestPath)
+        MANIFEST_PATHS.has(privatePath)
       ) {
-        await streamFile(
-          request,
-          response,
-          pathInsideRoot(resolvedRoot, MANIFEST_PATHS.get(requestPath)),
-          MIME_TYPES.get(".json"),
-        );
+        if (privatePath === "/metadata/media.json") {
+          sendJson(
+            response,
+            200,
+            loadManifest().publicMedia,
+            request.method === "HEAD",
+          );
+        } else {
+          await streamFile(
+            request,
+            response,
+            pathInsideRoot(resolvedRoot, MANIFEST_PATHS.get(privatePath)),
+            MIME_TYPES.get(".json"),
+          );
+        }
         return;
       }
       if (request.method === "GET" || request.method === "HEAD") {
-        const mediaEntry = loadManifest().byPublicPath.get(requestPath);
+        const mediaEntry = loadManifest().byPrivatePath.get(privatePath);
         if (mediaEntry) {
           await streamFile(
             request,
@@ -443,7 +515,7 @@ export function createExportServer({
       }
       if (
         request.method === "POST" &&
-        requestPath === "/api/favorites-archives"
+        privatePath === "/api/favorites-archives"
       ) {
         if (!sameOriginPost(request, activePort)) {
           sendError(response, 403, "Archive requests must be same-origin");
@@ -502,17 +574,18 @@ export function createExportServer({
             root: resolvedRoot,
             entries,
             createZip,
+            temporaryRoot: resolvedTemporaryRoot,
           });
-          const token = crypto.randomBytes(24).toString("base64url");
+          const archiveToken = crypto.randomBytes(24).toString("base64url");
           const date = new Date().toISOString().slice(0, 10);
           const filename = `Famly-Favorites-${date}.zip`;
-          archives.set(token, {
+          archives.set(archiveToken, {
             ...archive,
             createdAt: Date.now(),
             filename,
           });
           sendJson(response, 201, {
-            downloadUrl: `/api/favorites-archives/${token}`,
+            downloadUrl: `${privatePrefix}/api/favorites-archives/${archiveToken}`,
             filename,
           });
         } finally {
@@ -520,21 +593,21 @@ export function createExportServer({
         }
         return;
       }
-      const archiveMatch = requestPath.match(
-        /^\/api\/favorites-archives\/([A-Za-z0-9_-]{32,})$/,
+      const archiveMatch = privatePath.match(
+        /^\/api\/favorites-archives\/([A-Za-z0-9_-]{32})$/,
       );
       if (request.method === "GET" && archiveMatch) {
         if (!sameOriginDownload(request, activePort)) {
           sendError(response, 403, "Archive downloads must be same-origin");
           return;
         }
-        const token = archiveMatch[1];
-        const archive = archives.get(token);
+        const archiveToken = archiveMatch[1];
+        const archive = archives.get(archiveToken);
         if (!archive) {
           sendError(response, 404, "Archive not found or already downloaded");
           return;
         }
-        archives.delete(token);
+        archives.delete(archiveToken);
         try {
           await streamFile(
             request,
@@ -587,6 +660,10 @@ export function createExportServer({
     close,
     address: () => server.address(),
     archiveCount: () => archives.size,
+    accessToken: () => accessToken,
+    privatePrefix: () => privatePrefix,
+    launchUrl: () =>
+      `http://${HOST}:${activePort}/#access=${accessToken}`,
   };
 }
 
@@ -606,12 +683,10 @@ async function main() {
       root: process.argv[2],
       port: process.argv[3] ?? DEFAULT_PORT,
     });
-    const address = await localServer.listen();
+    await localServer.listen();
+    process.stdout.write(`Famly export viewer: ${localServer.launchUrl()}\n`);
     process.stdout.write(
-      `Famly export viewer: http://${address.host}:${address.port}/\n`,
-    );
-    process.stdout.write(
-      "Private files are available only to this loopback server. Press Ctrl-C to stop.\n",
+      "Private files require this launch token. Press Ctrl-C to stop.\n",
     );
     const shutdown = async () => {
       await localServer.close();

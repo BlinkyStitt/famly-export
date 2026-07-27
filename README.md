@@ -1,50 +1,39 @@
 # Export Famly Home and Messages with Codex
 
-This repository contains a Codex skill for a private offline export of the
-signed-in Famly Home feed and Messages. It controls the user's existing Chrome
-profile through a dedicated Chrome DevTools MCP server; the user signs in to
-Famly themselves and never gives the agent a password or browser credential.
+This repository contains a dependency-free Codex workflow for a private offline
+export of the signed-in Famly Home feed and complete active and archived
+Messages history. Famly runs in a dedicated Chrome profile that contains no
+unrelated browsing, and the user signs in themselves without sharing a password
+or browser credential with Codex.
 
-The export includes names, message history, read state, comments, observations,
-and media that may show other people's children. Keep it out of Git, public
-links, and ordinary cloud drives unless you have deliberately selected a
-suitable private location.
+The export contains names, messages, read state, comments, observations, and
+media that may show other people's children. Keep it out of Git, public links,
+and ordinary cloud drives unless the destination is deliberately private.
 
-> **Warning:** Exporting Messages opens each conversation and may mark unread
+> **Warning:** Exporting Messages opens every conversation and may mark unread
 > conversations as read. The exporter records the initial unread count but
 > does not restore unread state.
 
-## What is exported
+## Security boundaries
 
-- Every post returned by the complete Famly Home feed.
-- Lossless Home post JSON.
-- Original-size Home post and comment photos directly in `photos/`.
-- Direct Home MP4 videos.
-- Explicit Home file attachments.
-- Every active and archived conversation after exhausting **Show More** in both
-  views.
-- Complete chronological message history, including exact 20-message page
-  multiples, message read metadata, and `MessageReactions`.
-- Explicit Famly-hosted Message images directly in `message-images/`.
-- Explicit non-image Message files in
-  `messages/attachments/<conversation-id>/...`.
-- Lossless conversation JSON with local attachment paths.
-- One dependency-free JSON-backed timeline that mixes Home posts and Messages
-  newest-first, nests comments under their posts, and shows conversation
-  context on each Message.
-- Inline original local images with browser-local favorites and a conventional
-  ZIP export containing selected originals in one `Famly Favorites/` folder.
-- A consolidated SHA-256 checksum file and export summary.
-
-Ordinary URLs in a message body, including external Google Drive links, remain
-clickable in the offline HTML viewer. They are not downloaded. Only explicit
-Famly attachment fields enter the media manifest.
-
-## Safety boundary
-
-The exporter captures selected successful response bodies in the page. It does
-not deliberately capture request headers, request bodies, cookies, local
-storage, access tokens, or browser profile files.
+- Chrome uses only
+  `/Users/bryan/Library/Application Support/Famly Export Chrome`, mode `0700`,
+  with DevTools bound to `127.0.0.1:9223`. It does not attach to the normal
+  Chrome profile.
+- Chrome DevTools MCP has no unrestricted filesystem access. It can save the
+  capture only into a private directory under the OS temporary directory.
+- Capture, build, download, and viewer startup share current-user ownership,
+  regular-file, canonical-containment, symlink rejection, directory `0700`,
+  file `0600`, and umask `077` enforcement.
+- Signed media URLs remain only in the private authoritative `media.json`.
+  They are read by download workers and passed to `curl` through stdin, never
+  through `xargs`, shell, or curl arguments. The viewer receives a redacted
+  projection without `sourceUrl`.
+- The viewer binds only to `127.0.0.1:4173`, requires an exact Host header, and
+  generates a fresh 256-bit launch token every time. Only the fixed HTML shell
+  and browser module are public.
+- Favorites ZIPs use 192-bit one-time tokens, private temporary modes, expiry,
+  startup crash-remnant cleanup, and signal cleanup.
 
 The exact URL below is prohibited:
 
@@ -52,83 +41,97 @@ The exact URL below is prohibited:
 https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch
 ```
 
-The tracked capture hook intercepts Fetch and XHR attempts for that URL before
-the real network call. Do not manually navigate to, fetch, probe, or otherwise
-load it.
+The MCP server blocks that exact URL before page control, and the tracked
+capture hook separately blocks Fetch and XHR attempts in the page. Never
+navigate to, fetch, probe, or otherwise load it.
 
-No Python or HAR is required for the known Famly API. A temporary ignored HAR
-is allowed only as a diagnostic fallback if in-page response capture stops
-working. It must be sanitized without printing credential values and deleted
-immediately after diagnosis.
+## What is exported
+
+- Every post returned by the complete Home feed, with lossless Home JSON.
+- Original-size Home post and comment images directly under `photos/`.
+- Direct Home MP4 videos and explicit Home file attachments.
+- Every active and archived conversation after exhausting **Show More**.
+- Complete chronological message history, including exact 20-message page
+  multiples, read metadata, and explicit `MessageReactions` evidence.
+- Famly-hosted Message images directly under `message-images/`.
+- Explicit non-image Message files under
+  `messages/attachments/<conversation-id>/`.
+- Four authoritative manifests:
+  `posts.json`, `conversations.json`, `media.json`, and `export-summary.json`.
+- One fixed JSON-backed timeline with original lazy-loaded images, nested
+  comments, conversation context, browser-local favorites, and selected
+  original-image ZIP export.
+- Consolidated SHA-256 checksums.
+
+Ordinary HTTP(S) links in bodies remain clickable and are not downloaded.
+Only explicit Famly-hosted attachment fields enter `media.json`.
 
 ## Requirements
 
-- macOS with a current Codex desktop app.
-- Google Chrome with remote debugging enabled for the existing signed-in
-  profile.
-- Node.js.
-- `npx` for the MCP server package.
-- `jq`, `curl`, `xargs`, and the native macOS `file`, `shasum`, `sips`, `find`,
-  `grep`, and `ditto` utilities.
+- macOS, Google Chrome, Node.js, and `npx`.
+- `jq`, `curl`, `xargs`, `file`, `shasum`, `sips`, `find`, `grep`, `lsof`, and
+  native `/usr/bin/ditto`.
 - Enough local disk for all original media.
 
-The direct `famly-chrome` Chrome DevTools MCP configuration is required. The
-in-app Browser and the plugin's default Chrome profile are not used.
+No Python, dependency installation, HAR, or browser-profile inspection is
+required for the known workflow.
 
-## 1. Make the repository skill available
+## 1. Launch the dedicated Famly Chrome profile
 
-Open this repository as the Codex workspace. Codex discovers:
-
-```text
-.agents/skills/famly-export/SKILL.md
-```
-
-If `$famly-export` does not appear, restart Codex after opening the repository.
-
-## 2. Configure Chrome DevTools MCP
-
-The known setup uses a distinct server name and an existing Chrome profile:
+From this repository:
 
 ```sh
-codex mcp add famly-chrome -- \
-  npx -y chrome-devtools-mcp@1.6.0 \
-  --autoConnect \
-  --allowUnrestrictedPaths \
-  --redactNetworkHeaders
+bash .agents/skills/famly-export/scripts/launch-famly-chrome.sh
 ```
 
-- `--autoConnect` attaches to the already-running Chrome profile.
-- `--allowUnrestrictedPaths` lets the tool save the private capture into this
-  workspace. Use that broad filesystem permission only with trusted prompts
-  and skills.
-- `--redactNetworkHeaders` reduces accidental credential exposure in browser
-  tool output.
+The launcher creates or tightens this dedicated profile to mode `0700`:
 
-Verify the server:
+```text
+/Users/bryan/Library/Application Support/Famly Export Chrome
+```
+
+It opens an ordinary visible Chrome window with remote debugging limited to:
+
+```text
+http://127.0.0.1:9223
+```
+
+Sign in to Famly yourself in that window, then open **Home**. Do not paste a
+password, token, cookie, browser storage value, saved page, profile file, or
+DevTools request header into Codex.
+
+## 2. Configure the hardened Famly MCP server
+
+Replace any existing entry:
+
+```sh
+codex mcp remove famly-chrome
+codex mcp add famly-chrome \
+  --env CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1 \
+  -- \
+  npx -y chrome-devtools-mcp@1.6.0 \
+  --browserUrl=http://127.0.0.1:9223 \
+  --redactNetworkHeaders \
+  --no-usage-statistics \
+  --no-performance-crux \
+  --no-category-network \
+  --no-category-performance \
+  --blockedUrlPattern=https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch
+```
+
+Then verify:
 
 ```sh
 codex mcp get famly-chrome
 codex mcp list
 ```
 
-Do not begin browser capture unless `codex mcp get famly-chrome` shows the
-exact package version and all three arguments above. If the existing entry
-lacks any of them, replace it:
+The entry must show the pinned package, browser URL, header redaction, both
+telemetry/CrUX opt-outs, both disabled tool categories, the exact blocked URL,
+and `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. It must not contain
+`--autoConnect` or `--allowUnrestrictedPaths`.
 
-```sh
-codex mcp remove famly-chrome
-codex mcp add famly-chrome -- \
-  npx -y chrome-devtools-mcp@1.6.0 \
-  --autoConnect \
-  --allowUnrestrictedPaths \
-  --redactNetworkHeaders
-```
-
-Restart Codex after adding or replacing the entry. A capture made through an
-older server process cannot be repaired with a secondary browser-download or
-chunked-save path; restart and recapture through the configured server.
-
-For long browser operations, add the following to the generated
+For long browser operations, add these values to the generated
 `[mcp_servers.famly-chrome]` table in `~/.codex/config.toml`:
 
 ```toml
@@ -136,66 +139,56 @@ startup_timeout_sec = 30
 tool_timeout_sec = 120
 ```
 
-## 3. Enable the existing Chrome profile
+Restart Codex after adding or replacing the entry.
 
-1. Start the normal Chrome profile used for Famly.
-2. Open `chrome://inspect/#remote-debugging`.
-3. Enable remote debugging.
-4. Accept Chrome's connection prompt.
-5. Close unrelated sensitive tabs.
-6. Keep Chrome and the Famly tab open.
-7. Restart Codex so it loads `famly-chrome`.
+## 3. Run the skill
 
-Remote debugging exposes open tabs in that profile to the MCP server. Disable
-it when the export finishes.
-
-## 4. Sign in yourself
-
-In the same Chrome profile:
-
-1. Open <https://app.famly.co/>.
-2. Sign in yourself.
-3. Open **Home**.
-
-Never paste a password, session token, cookie, saved page, browser storage, or
-DevTools request headers into Codex.
-
-## 5. Run the skill
-
-From a Codex conversation in this workspace:
+Open this repository as the Codex workspace and invoke:
 
 ```text
-$famly-export Export the complete Famly Home feed, all original Home media, and every active and archived conversation with attachments and the offline HTML viewer. Use the already-signed-in Chrome profile.
+$famly-export Export the complete Famly Home feed, all original Home media, and every active and archived conversation with attachments and the offline viewer.
 ```
 
-Before browser automation, the skill repeats:
+The browser workflow:
 
-> Exporting Messages opens each conversation and may mark unread conversations
-> as read. The exporter records the initial unread count but does not restore
-> unread state.
+1. Requires the authenticated dedicated-profile Home tab.
+2. Reloads it with the exact tracked capture and killswitch hook.
+3. Scrolls Home to eight stable bottom checks and requires exact equality
+   between rendered and captured Home post IDs.
+4. Exhausts active and archived **Show More**, then records initial unread
+   conversations.
+5. Opens every conversation and reverse-scrolls until a page shorter than 20
+   arrives. Exact multiples require the extra empty or short page.
+6. Requires explicit `MessageReactions` evidence for every message ID.
+7. Requires captured detail IDs to equal the active-plus-archived list.
 
-The skill then:
+### Sole capture save path
 
-1. Performs a real reload of the already-open Home tab with the exact
-   response-capture and killswitch-blocking hook. A hash-only navigation is
-   not sufficient because it does not install the initialization script.
-2. Scrolls Home to eight stable bottom checks.
-3. Requires rendered post IDs to equal captured API post IDs.
-4. Exhausts **Show More** in active and archived Messages.
-5. Records the initial unread count.
-6. Opens each conversation and reverse-scrolls the column-reversed message
-   pane until a page shorter than 20 messages arrives.
-7. Captures an explicit `MessageReactions` entry for every message ID,
-   including messages with zero reactions, before advancing.
-8. Requires captured conversation IDs to equal active plus archived IDs.
-9. Builds the four authoritative JSON manifests and the fixed viewer shell.
-10. Immediately downloads fresh Home post/comment media and Message
-    attachments while resuming around existing complete files.
-11. Validates every supported media file and scans generated artifacts for
-    credential markers without printing matched values.
+Before the final browser save, prepare a private OS-temporary destination:
 
-For a large history, leave Chrome open and wait for each long-running browser
-or download command to exit. Do not start duplicate operations.
+```sh
+node .agents/skills/famly-export/scripts/secure-capture.mjs prepare
+```
+
+Pass the printed absolute `captured-export.json` path as the final
+`evaluate_script.filePath`. Then finalize it:
+
+```sh
+node .agents/skills/famly-export/scripts/secure-capture.mjs finalize \
+  '<printed-temp-path>' \
+  .
+```
+
+Finalization requires a current-user regular file in its private
+`famly-capture-*` directory, validates JSON and capture schema version 2,
+copies through a random `0600` metadata temporary file, fsyncs it, atomically
+renames it to `metadata/captured-export.json`, and removes the temporary
+capture. On failure, it preserves the capture at `0600` inside its `0700`
+directory and reports the retry path. `prepare` removes current-user capture
+directories older than 24 hours.
+
+Do not save directly to the repository, use a browser download, split the
+capture into chunks, or create another capture channel.
 
 ## Output
 
@@ -208,39 +201,24 @@ metadata/
 ├── media.json
 └── posts.json
 photos/
-├── <post-date>_<post-id>_<image-id>.<extension>
-└── <comment-date>_<comment-id>_<image-id>.<extension>
+└── <date>_<owner-id>_<image-id>.<extension>
 message-images/
-└── <message-date>_<message-id>_<image-id>.<extension>
+└── <date>_<message-id>_<image-id>.<extension>
 videos/
-└── <year>/
-    └── <post-date>_<post-id>_<video-id>.mp4
+└── <year>/<date>_<post-id>_<video-id>.mp4
 files/
-└── <year>/
-    └── <post-date>_<post-id>_<file-id>_<safe-filename>
+└── <year>/<date>_<post-id>_<file-id>_<safe-filename>
 messages/
 ├── index.html
 ├── viewer-app.mjs
-└── attachments/
-    └── <conversation-id>/
-        └── <message-date>_<message-id>_<file-id>_<safe-filename>
+└── attachments/<conversation-id>/<date>_<message-id>_<file-id>_<safe-filename>
 ```
 
-The two image collections are therefore directly available as `photos/` for
-Home posts and comments and `message-images/` for Messages. The fixed HTML
-shell and browser module contain no exported names, bodies, IDs, JSON payloads,
-or image bytes. At runtime they fetch `posts.json`, `conversations.json`,
-`media.json`, and `export-summary.json`, then create private content with safe
-DOM APIs. Original local image paths are used directly with `loading="lazy"`;
-no thumbnail files or caches are created.
+All private output roots and temporary artifacts are ignored by Git.
 
-`metadata/`, `photos/`, `message-images/`, `videos/`, `files/`, `messages/`,
-`*.part`, and temporary HAR files are ignored. Never override that protection
-for a normal family backup.
+## Local commands
 
-## Local tools
-
-Build the manifests and fixed viewer application:
+Build the four manifests and fixed viewer:
 
 ```sh
 node .agents/skills/famly-export/scripts/build-export.mjs \
@@ -248,7 +226,7 @@ node .agents/skills/famly-export/scripts/build-export.mjs \
   .
 ```
 
-Download or resume all supported media with eight workers:
+Download or resume supported media with eight workers:
 
 ```sh
 bash .agents/skills/famly-export/scripts/download-media.sh \
@@ -257,205 +235,144 @@ bash .agents/skills/famly-export/scripts/download-media.sh \
   8
 ```
 
-Launch the private viewer:
+Workers receive only manifest indexes. Each worker reads its own signed URL,
+requires one of the exact approved hosts `img.famly.co`,
+`famly-de.s3.eu-central-1.amazonaws.com`, or
+`famly-video-storage.s3.eu-central-1.amazonaws.com` plus visible safe URL
+characters, rejects the killswitch locally, permits only HTTPS redirects, and
+gives the URL to `curl` through stdin configuration. Downloads use private
+resumable `.part` files and atomic final renames. Existing nonempty originals
+are skipped.
+
+Explicitly harden an existing export tree:
 
 ```sh
-node .agents/skills/famly-export/scripts/serve-export.mjs .
+node .agents/skills/famly-export/scripts/private-tree.mjs harden .
 ```
 
-Open <http://127.0.0.1:4173/>. The server binds only to that loopback address
-and serves only the viewer, four manifests, manifest-listed media, and the
-narrow favorites archive routes. It rejects raw capture access, directory
-listings, unknown roots, traversal, and cross-origin archive requests.
+This changes modes only. It rejects paths not owned by the current user,
+symlinks, devices, sockets, and other non-regular entries.
 
-An optional second argument changes the port:
-
-```sh
-node .agents/skills/famly-export/scripts/serve-export.mjs . 4812
-```
-
-Favorites live in versioned browser `localStorage`. Browser storage is
-origin-specific, so changing the port creates a separate selection. On load,
-the viewer drops saved identities that are no longer present in `media.json`.
-Opening `messages/index.html` directly with `file://` is unsupported because
-browsers do not permit its JSON fetches; the page displays this launch command.
-
-Click an image or its keyboard-accessible **Favorite** button to toggle it.
-The footer exports selected original files—never thumbnails or transformed
-copies—as a ZIP. The local API accepts current image identities only, stages
-hard links, uses `ditto --norsrc`, assigns deterministic names if future
-basenames collide, permits one creation at a time, and deletes one-time or
-expired archives.
-
-Run fixture tests:
+Run fixtures:
 
 ```sh
 node --test .agents/skills/famly-export/tests/*.test.mjs
 ```
 
-The downloader writes to `.part` files and atomically renames completed media.
-Existing nonempty paths are skipped, including established Home and Message
-image paths.
+## Authenticated local viewer
 
-## Validation boundary
-
-Native macOS validation includes:
-
-- nonzero file size;
-- successful HTTP completion;
-- zero `.part` files;
-- expected MIME/signature through `file`;
-- image decoding and dimensions through `sips` for supported images;
-- SHA-256 checksums for every manifest path;
-- a credential-marker scan over generated JSON, HTML, and checksums.
-- a real fixture ZIP check that verifies the selected source checksums, one
-  flat `Famly Favorites/` folder, and no `__MACOSX` metadata.
-- server allowlist, MIME, loopback, origin, size/count, concurrency, expiry,
-  cleanup, and traversal tests.
-- viewer ordering, timestamp-tie, nested-comment, original-path, lazy-loading,
-  favorite, storage-restoration, malformed-manifest, and hostile-value tests.
-
-MP4 and PDF validation is signature-level only. It does not perform a deep
-`ffprobe` video parse or `qpdf` PDF parse. macOS may identify a valid MP4
-container as `video/x-m4v`; the downloader accepts that exact signature alias
-for a `video/mp4` manifest entry.
-
-The transformer rejects incomplete or unsafe capture state, including:
-
-- incomplete Home DOM/API sets;
-- incomplete active or archived lists;
-- a list that did not explicitly exhaust **Show More**;
-- missing or extra conversation detail IDs;
-- message histories whose last API page contains 20 messages;
-- any message ID without explicit `MessageReactions` response evidence;
-- duplicate or traversal-capable media paths;
-- comment images without a stable comment owner or flat `photos/` path;
-- unsupported media extensions, which are retained in lossless JSON and
-  reported in the summary rather than silently downloaded.
-
-Non-Famly-hosted explicit attachment fields are likewise retained in lossless
-JSON and reported, but excluded from the download manifest.
-
-## Troubleshooting
-
-### `Could not find DevToolsActivePort`
-
-Confirm Chrome is running, remote debugging is enabled at
-`chrome://inspect/#remote-debugging`, and Chrome accepted the connection. Then
-restart Codex and run `codex mcp list`.
-
-### Famly opens at `#/login`
-
-The MCP server attached to the wrong profile. Stop rather than asking the agent
-to sign in. Ensure `famly-chrome` uses `--autoConnect`, open Famly in Chrome's
-default profile, and retry.
-
-### A separate blank Chrome profile opens
-
-The wrong Chrome DevTools server was selected. Explicitly invoke
-`$famly-export` and require the named `famly-chrome` server.
-
-### A long browser call times out
-
-Set `tool_timeout_sec = 120`. Make one short state query to learn whether the
-existing operation completed. Do not immediately launch a duplicate scroll or
-conversation export.
-
-### Home capture and rendered post counts differ
-
-The feed is incomplete. Continue the existing bounded scroll sequence until
-eight stable bottom checks, then recapture. Do not download from a mismatched
-manifest.
-
-### Home capture reports no hook or no feed page
-
-Make sure the signed-in tab is already open at
-`https://app.famly.co/#/account/home`, then perform a real reload with the
-tracked hook as `navigate_page.initScript`. Changing only the URL hash does
-not execute the initialization script.
-
-### Conversation export ends on 20 messages
-
-Reverse-scroll again. An exact multiple of 20 requires one additional API
-request returning fewer than 20, including an empty terminal page.
-
-### Downloads return 403 or 404
-
-Famly's signed media URLs expire. Repeat the complete response-body capture and
-rerun the builder and downloader immediately. Existing complete files are
-skipped. This also applies when newly discovered comment images are the only
-missing files; do not substitute their `url_big` thumbnail/preview fields for
-the original-media contract.
-
-### Opening `messages/index.html` shows a server instruction
-
-This is expected for `file://`. Run:
+Launch on the stable favorites origin:
 
 ```sh
 node .agents/skills/famly-export/scripts/serve-export.mjs .
 ```
 
-Then open <http://127.0.0.1:4173/>. Use the same port on future launches if
-you want the same browser-local favorites.
+The server prints a URL shaped like:
 
-### The viewer reports a missing manifest
+```text
+http://127.0.0.1:4173/#access=<fresh-token>
+```
 
-Run the builder again and confirm all four JSON files exist under `metadata/`.
-The server intentionally does not infer private records from HTML or create a
-parallel timeline manifest.
+Open the complete printed URL. The fixed shell validates the fragment, stores
+the token in `sessionStorage`, and removes the fragment from browser history.
+Favorites remain in the existing `localStorage` origin and survive token and
+server restarts. Changing the port changes the storage origin.
+
+Only `/`, the fixed shell aliases, and `/messages/viewer-app.mjs` are public.
+Manifests, media, and archive APIs require the current
+`/_private/<token>/...` prefix. Missing or incorrect tokens return `404`.
+`media.json` is projected without `sourceUrl`; raw capture data, checksums,
+directory listings, traversal, absolute-form requests, arbitrary Host values,
+and cross-origin archive requests are denied.
+
+The server uses no cookies or CORS and sends restrictive CSP, frame, referrer,
+permissions, opener, resource, cache, and MIME-sniffing headers.
+
+Favorites export stages hard links to originals in one flat
+`Famly Favorites/` directory, uses `ditto --norsrc`, issues a one-time
+192-bit URL, and cleans on download, expiry, signal, or a later startup after
+one hour. The source files are not transformed.
+
+> **ZIP warning:** Exported ZIPs are conventional unencrypted archives. The
+> browser controls the final destination and its permissions; move the ZIP to
+> an appropriately private location.
+
+Direct `file://` opening is unsupported.
+
+## Validation boundary
+
+Required validation includes:
+
+- exact Home API/DOM post-set equality;
+- terminal short active, archived, and per-conversation pages;
+- exact active-plus-archived/detail conversation equality;
+- explicit reaction evidence for every message;
+- matching post, message, reaction, media, and manifest counts;
+- correct flat Home/comment and Message image paths;
+- no unsupported silent drops;
+- zero `.part` files;
+- expected `file` MIME/signatures and successful `sips` image decoding;
+- SHA-256 coverage for every media path;
+- no `x-famly-accesstoken` or `famly.session-marker` in generated artifacts;
+- fixed shell/module content independence from private exported records;
+- capture, private-tree, downloader, viewer, server, and ZIP fixtures.
+
+MP4 and PDF checks are signature-level through native `file`; they are not
+deep `ffprobe` or `qpdf` parses. A valid MP4 may be reported as
+`video/mp4`, `video/x-m4v`, or `application/mp4`.
+
+## Troubleshooting
+
+### No authenticated Famly Home tab
+
+Make sure the dedicated Chrome window from `launch-famly-chrome.sh` is open.
+Sign in yourself and open `https://app.famly.co/#/account/home`. Do not use the
+normal Chrome profile as a fallback.
+
+### DevTools endpoint is unavailable
+
+Check that port `9223` is free, run the launcher once, and verify:
+
+```sh
+curl http://127.0.0.1:9223/json/version
+```
+
+### Capture save is denied
+
+Run `secure-capture.mjs prepare` again and use its printed OS-temporary path.
+Confirm the MCP entry does not contain `--allowUnrestrictedPaths`. Do not route
+the capture through another mechanism.
+
+### Downloads return 403 or 404
+
+Signed URLs expired. Repeat the complete response-body capture, finalize it,
+rebuild, and rerun the downloader. Existing complete originals are skipped.
+Never substitute thumbnails or preview URLs.
+
+### Viewer reports no valid access token
+
+Restart the server and open the complete URL it prints, including the fragment.
+The token rotates on every launch.
+
+### Viewer reports a missing manifest
+
+Rebuild and confirm all four authoritative JSON files exist under `metadata/`.
+The server never infers private records from HTML.
 
 ### Favorites ZIP creation fails
 
-Confirm every selected media path is a nonempty current manifest-listed image,
-native `/usr/bin/ditto` exists, and there is free temporary disk space. Reload
-the viewer to prune stale identities. A second export request receives a
-conflict response while the first is still being created.
-
-### The prohibited killswitch appears as a real network request
-
-Stop the capture. Confirm `scripts/capture-hook.js` was passed verbatim as the
-reload `initScript`, and report the locally blocked-attempt count from the
-capture. Do not load or inspect the prohibited URL.
-
-### Saving `captured-export.json` is denied
-
-Stop and run `codex mcp get famly-chrome`. The server must include
-`--allowUnrestrictedPaths` and `--redactNetworkHeaders`; correct the entry,
-restart Codex, and recapture. Do not route the private capture through a
-browser download or another parallel save mechanism.
-
-### In-page response capture stops working
-
-First inspect the tracked hook and known endpoint paths without retrieving
-request headers. A temporary ignored HAR is the last diagnostic fallback only.
-Sanitize it, do not retain headers or tokens, and delete it immediately.
+Confirm all selected identities still exist as current image records, native
+`/usr/bin/ditto` exists, and temporary disk space is available. A concurrent
+creation receives `409`.
 
 ## Completion report
 
-A completed run reports the private output paths; Home post/comment counts and
-date range; active/archived conversation counts; Message/reaction counts and
-date range; the initial unread count; media counts by Home post photos, Home
-comment photos, Home videos/files, Message images, and other Message
-attachments; total bytes and checksum path; unsupported items; locally blocked
-prohibited requests; capture/MIME/decoder/signature/partial/credential results;
-and the viewer/server/ZIP validation results.
+A completed export reports private paths; Home post/comment counts and date
+range; active/archived conversation counts; Message/reaction counts and date
+range; initial unread count; media counts by category; total bytes and checksum
+path; unsupported items; blocked killswitch attempts; capture, MIME, decoder,
+signature, partial, credential, server, and ZIP results; and the tokenized
+local launch URL.
 
-MP4 and PDF results must remain labeled signature-level only. Private output
-stays ignored and uncommitted; only the reusable skill, scripts, tests, and
+Private output stays ignored and uncommitted. Only reusable code, tests, and
 documentation belong in Git.
-
-## Disconnect after the export
-
-Turn off remote debugging at:
-
-```text
-chrome://inspect/#remote-debugging
-```
-
-To remove the dedicated server:
-
-```sh
-codex mcp remove famly-chrome
-```
-
-Restart Codex after removing it.

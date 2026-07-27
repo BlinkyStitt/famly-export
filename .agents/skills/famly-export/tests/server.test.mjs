@@ -7,7 +7,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 
-import { createExportServer } from "../scripts/serve-export.mjs";
+import {
+  createExportServer,
+  sweepStaleArchiveDirectories,
+} from "../scripts/serve-export.mjs";
 import { mediaIdentity } from "../scripts/viewer-app.mjs";
 
 function fixtureEntry(overrides = {}) {
@@ -18,7 +21,7 @@ function fixtureEntry(overrides = {}) {
     ownerId: "post-1",
     conversationId: null,
     kind: "image",
-    sourceUrl: "https://img.famly.co/original.jpg?signature=fresh",
+    sourceUrl: "https://img.famly.co/original.jpg?signature=private",
     relativePath: "photos/same.jpg",
     filename: "same.jpg",
     expectedMime: "image/jpeg",
@@ -30,10 +33,17 @@ function fixtureEntry(overrides = {}) {
 
 function fixtureRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "famly-server-test-"));
-  fs.mkdirSync(path.join(root, "metadata"), { recursive: true });
-  fs.mkdirSync(path.join(root, "messages"), { recursive: true });
-  fs.mkdirSync(path.join(root, "photos"), { recursive: true });
-  fs.mkdirSync(path.join(root, "message-images"), { recursive: true });
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-server-archives-test-"),
+  );
+  for (const directory of [
+    "metadata",
+    "messages",
+    "photos",
+    "message-images",
+  ]) {
+    fs.mkdirSync(path.join(root, directory), { recursive: true });
+  }
   fs.writeFileSync(path.join(root, "messages", "index.html"), "<!doctype html>");
   fs.writeFileSync(path.join(root, "messages", "viewer-app.mjs"), "export {};");
   fs.writeFileSync(path.join(root, "metadata", "posts.json"), "[]\n");
@@ -63,10 +73,16 @@ function fixtureRoot() {
     path.join(root, "message-images", "same.jpg"),
     "message-original",
   );
-  return { root, entries };
+  return { root, temporaryRoot, entries };
 }
 
-function requestRaw({ port, requestPath, method = "GET", headers = {}, body = "" }) {
+function requestRaw({
+  port,
+  requestPath,
+  method = "GET",
+  headers = {},
+  body = "",
+}) {
   return new Promise((resolve, reject) => {
     const request = http.request(
       {
@@ -97,6 +113,7 @@ async function startFixtureServer(options = {}) {
   const fixture = fixtureRoot();
   const localServer = createExportServer({
     root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
     port: 0,
     ...options,
   });
@@ -106,54 +123,138 @@ async function startFixtureServer(options = {}) {
     localServer,
     port: address.port,
     origin: `http://127.0.0.1:${address.port}`,
+    privatePrefix: localServer.privatePrefix(),
   };
 }
 
-test("server binds to loopback and serves only allowlisted viewer data", async (t) => {
+function cleanupFixture(fixture) {
+  fs.rmSync(fixture.root, { recursive: true, force: true });
+  fs.rmSync(fixture.temporaryRoot, { recursive: true, force: true });
+}
+
+test("server exposes only fixed public files and token-authenticated private data", async (t) => {
   const fixture = await startFixtureServer();
   t.after(async () => {
     await fixture.localServer.close();
-    fs.rmSync(fixture.root, { recursive: true, force: true });
+    cleanupFixture(fixture);
   });
 
   assert.equal(fixture.localServer.address().address, "127.0.0.1");
+  assert.match(fixture.localServer.accessToken(), /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    fixture.localServer.launchUrl(),
+    `${fixture.origin}/#access=${fixture.localServer.accessToken()}`,
+  );
+
   const index = await fetch(`${fixture.origin}/`);
   assert.equal(index.status, 200);
   assert.equal(index.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(index.headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.equal(index.headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(index.headers.get("x-frame-options"), "DENY");
+  assert.equal(index.headers.get("referrer-policy"), "no-referrer");
+  assert.match(index.headers.get("permissions-policy"), /camera=\(\)/);
+  assert.match(index.headers.get("content-security-policy"), /frame-ancestors 'none'/);
 
-  const manifest = await fetch(`${fixture.origin}/metadata/media.json`);
-  assert.equal(manifest.status, 200);
-  assert.equal(manifest.headers.get("content-type"), "application/json; charset=utf-8");
-  const media = await manifest.json();
-  assert.equal(media.length, 2);
-
-  const image = await fetch(`${fixture.origin}/photos/same.jpg`);
-  assert.equal(image.status, 200);
-  assert.equal(image.headers.get("content-type"), "image/jpeg");
-  assert.equal(await image.text(), "home-original");
-
+  const publicModule = await fetch(`${fixture.origin}/messages/viewer-app.mjs`);
+  assert.equal(publicModule.status, 200);
   for (const requestPath of [
+    "/metadata/posts.json",
+    "/metadata/media.json",
+    "/photos/same.jpg",
     "/metadata/captured-export.json",
     "/metadata/media-checksums.sha256",
     "/photos/",
     "/.agents/skills/famly-export/SKILL.md",
-    "/unknown",
   ]) {
     const response = await fetch(`${fixture.origin}${requestPath}`);
     assert.equal(response.status, 404, requestPath);
   }
 
+  const wrongToken = "A".repeat(43);
+  assert.notEqual(wrongToken, fixture.localServer.accessToken());
+  const wrong = await fetch(
+    `${fixture.origin}/_private/${wrongToken}/metadata/posts.json`,
+  );
+  assert.equal(wrong.status, 404);
+
+  const posts = await fetch(
+    `${fixture.origin}${fixture.privatePrefix}/metadata/posts.json`,
+  );
+  assert.equal(posts.status, 200);
+  assert.deepEqual(await posts.json(), []);
+
+  const manifest = await fetch(
+    `${fixture.origin}${fixture.privatePrefix}/metadata/media.json`,
+  );
+  assert.equal(manifest.status, 200);
+  assert.equal(manifest.headers.get("content-type"), "application/json; charset=utf-8");
+  const media = await manifest.json();
+  assert.equal(media.length, 2);
+  assert.ok(media.every((entry) => !Object.hasOwn(entry, "sourceUrl")));
+  assert.ok(
+    !JSON.stringify(media).includes("signature=private"),
+    "signed URLs must not be disclosed by the viewer projection",
+  );
+
+  const image = await fetch(
+    `${fixture.origin}${fixture.privatePrefix}/photos/same.jpg`,
+  );
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/jpeg");
+  assert.equal(await image.text(), "home-original");
+
+  const rawCapture = await fetch(
+    `${fixture.origin}${fixture.privatePrefix}/metadata/captured-export.json`,
+  );
+  assert.equal(rawCapture.status, 404);
+
   const traversal = await requestRaw({
     port: fixture.port,
-    requestPath: "/photos/%2e%2e/metadata/captured-export.json",
+    requestPath: `${fixture.privatePrefix}/photos/%2e%2e/metadata/captured-export.json`,
   });
   assert.equal(traversal.status, 400);
-  const directoryTraversal = await requestRaw({
+  const absoluteForm = await requestRaw({
     port: fixture.port,
-    requestPath: "/photos/../metadata/posts.json",
+    requestPath: `${fixture.origin}${fixture.privatePrefix}/metadata/posts.json`,
   });
-  assert.equal(directoryTraversal.status, 400);
+  assert.equal(absoluteForm.status, 400);
+  const wrongHost = await requestRaw({
+    port: fixture.port,
+    requestPath: `${fixture.privatePrefix}/metadata/posts.json`,
+    headers: { Host: `localhost:${fixture.port}` },
+  });
+  assert.equal(wrongHost.status, 400);
+});
+
+test("server rotates launch tokens without changing the viewer origin", async () => {
+  const fixture = fixtureRoot();
+  const first = createExportServer({
+    root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
+    port: 0,
+  });
+  const firstAddress = await first.listen();
+  const firstToken = first.accessToken();
+  await first.close();
+
+  const second = createExportServer({
+    root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
+    port: firstAddress.port,
+  });
+  await second.listen();
+  try {
+    assert.notEqual(second.accessToken(), firstToken);
+    assert.equal(second.address().port, firstAddress.port);
+    const stale = await fetch(
+      `http://127.0.0.1:${firstAddress.port}/_private/${firstToken}/metadata/posts.json`,
+    );
+    assert.equal(stale.status, 404);
+  } finally {
+    await second.close();
+    cleanupFixture(fixture);
+  }
 });
 
 test("archive API rejects cross-origin, oversized, invalid, and concurrent requests", async (t) => {
@@ -175,9 +276,9 @@ test("archive API rejects cross-origin, oversized, invalid, and concurrent reque
   t.after(async () => {
     releaseZip();
     await fixture.localServer.close();
-    fs.rmSync(fixture.root, { recursive: true, force: true });
+    cleanupFixture(fixture);
   });
-  const endpoint = `${fixture.origin}/api/favorites-archives`;
+  const endpoint = `${fixture.origin}${fixture.privatePrefix}/api/favorites-archives`;
   const validBody = JSON.stringify({
     identities: [fixture.entries[0].identity],
   });
@@ -216,7 +317,7 @@ test("archive API rejects cross-origin, oversized, invalid, and concurrent reque
 
   const oversized = await requestRaw({
     port: fixture.port,
-    requestPath: "/api/favorites-archives",
+    requestPath: `${fixture.privatePrefix}/api/favorites-archives`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -248,14 +349,14 @@ test("archive API rejects cross-origin, oversized, invalid, and concurrent reque
   assert.equal((await firstRequest).status, 201);
 });
 
-test("ZIP contains exactly selected originals in one flat folder and is one-time", async (t) => {
+test("ZIP is private, flat, checksum-preserving, and one-time", async (t) => {
   const fixture = await startFixtureServer();
   t.after(async () => {
     await fixture.localServer.close();
-    fs.rmSync(fixture.root, { recursive: true, force: true });
+    cleanupFixture(fixture);
   });
   const creation = await fetch(
-    `${fixture.origin}/api/favorites-archives`,
+    `${fixture.origin}${fixture.privatePrefix}/api/favorites-archives`,
     {
       method: "POST",
       headers: {
@@ -269,8 +370,20 @@ test("ZIP contains exactly selected originals in one flat folder and is one-time
   );
   assert.equal(creation.status, 201);
   const payload = await creation.json();
+  assert.match(
+    payload.downloadUrl,
+    new RegExp(`^${fixture.privatePrefix}/api/favorites-archives/[A-Za-z0-9_-]{32}$`),
+  );
   assert.match(payload.filename, /^Famly-Favorites-\d{4}-\d{2}-\d{2}\.zip$/);
   assert.equal(fixture.localServer.archiveCount(), 1);
+
+  const archiveDirectories = fs
+    .readdirSync(fixture.temporaryRoot)
+    .filter((name) => name.startsWith("famly-favorites-"));
+  assert.equal(archiveDirectories.length, 1);
+  const archiveRoot = path.join(fixture.temporaryRoot, archiveDirectories[0]);
+  assert.equal(fs.statSync(archiveRoot).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(path.join(archiveRoot, "favorites.zip")).mode & 0o777, 0o600);
 
   const deniedDownload = await fetch(`${fixture.origin}${payload.downloadUrl}`, {
     headers: { Origin: "https://example.com" },
@@ -283,21 +396,19 @@ test("ZIP contains exactly selected originals in one flat folder and is one-time
   });
   assert.equal(download.status, 200);
   assert.equal(download.headers.get("content-type"), "application/zip");
-  assert.match(
-    download.headers.get("content-disposition"),
-    /^attachment; filename="Famly-Favorites-\d{4}-\d{2}-\d{2}\.zip"$/,
-  );
   const zipPath = path.join(fixture.root, "fixture.zip");
   fs.writeFileSync(zipPath, Buffer.from(await download.arrayBuffer()));
   assert.equal(fixture.localServer.archiveCount(), 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(!fs.existsSync(archiveRoot));
 
   const members = execFileSync("/usr/bin/unzip", ["-Z1", zipPath], {
     encoding: "utf8",
   })
     .trim()
     .split("\n")
-    .filter((member) => member && !member.endsWith("/"));
-  members.sort();
+    .filter((member) => member && !member.endsWith("/"))
+    .sort();
   assert.deepEqual(members, [
     "Famly Favorites/same (2).jpg",
     "Famly Favorites/same.jpg",
@@ -312,16 +423,12 @@ test("ZIP contains exactly selected originals in one flat folder and is one-time
     .sort();
   assert.deepEqual(archivedBodies, ["home-original", "message-original"]);
 
-  const expectedChecksums = [
-    "home-original",
-    "message-original",
-  ]
-    .map((body) => crypto.createHash("sha256").update(body).digest("hex"))
-    .sort();
-  const archiveChecksums = archivedBodies
-    .map((body) => crypto.createHash("sha256").update(body).digest("hex"))
-    .sort();
-  assert.deepEqual(archiveChecksums, expectedChecksums);
+  const digest = (body) =>
+    crypto.createHash("sha256").update(body).digest("hex");
+  assert.deepEqual(
+    archivedBodies.map(digest).sort(),
+    ["home-original", "message-original"].map(digest).sort(),
+  );
 
   const secondDownload = await fetch(
     `${fixture.origin}${payload.downloadUrl}`,
@@ -330,14 +437,37 @@ test("ZIP contains exactly selected originals in one flat folder and is one-time
   assert.equal(secondDownload.status, 404);
 });
 
+test("startup removes stale crash remnants but preserves active archive directories", () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-stale-archives-test-"),
+  );
+  const stale = fs.mkdtempSync(path.join(temporaryRoot, "famly-favorites-"));
+  const active = fs.mkdtempSync(path.join(temporaryRoot, "famly-favorites-"));
+  fs.writeFileSync(path.join(stale, "favorites.zip"), "stale");
+  fs.writeFileSync(path.join(active, "favorites.zip"), "active");
+  const now = Date.now();
+  const old = new Date(now - 2 * 60 * 60 * 1_000);
+  fs.utimesSync(stale, old, old);
+  try {
+    assert.equal(
+      sweepStaleArchiveDirectories({ temporaryRoot, now }),
+      1,
+    );
+    assert.ok(!fs.existsSync(stale));
+    assert.ok(fs.existsSync(active));
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("abandoned archives expire and are deleted", async (t) => {
   const fixture = await startFixtureServer({ archiveTtlMs: 25 });
   t.after(async () => {
     await fixture.localServer.close();
-    fs.rmSync(fixture.root, { recursive: true, force: true });
+    cleanupFixture(fixture);
   });
   const creation = await fetch(
-    `${fixture.origin}/api/favorites-archives`,
+    `${fixture.origin}${fixture.privatePrefix}/api/favorites-archives`,
     {
       method: "POST",
       headers: {
@@ -351,11 +481,51 @@ test("abandoned archives expire and are deleted", async (t) => {
   );
   assert.equal(creation.status, 201);
   const payload = await creation.json();
-  assert.equal(fixture.localServer.archiveCount(), 1);
   await new Promise((resolve) => setTimeout(resolve, 50));
   const expired = await fetch(`${fixture.origin}${payload.downloadUrl}`, {
     headers: { Referer: `${fixture.origin}/` },
   });
   assert.equal(expired.status, 404);
   assert.equal(fixture.localServer.archiveCount(), 0);
+});
+
+test("server startup rejects symlinks in private trees", () => {
+  const fixture = fixtureRoot();
+  const outside = path.join(fixture.root, "outside.jpg");
+  fs.writeFileSync(outside, "outside");
+  fs.unlinkSync(path.join(fixture.root, "photos", "same.jpg"));
+  fs.symlinkSync(outside, path.join(fixture.root, "photos", "same.jpg"));
+  try {
+    assert.throws(
+      () =>
+        createExportServer({
+          root: fixture.root,
+          temporaryRoot: fixture.temporaryRoot,
+          port: 0,
+        }),
+      /Symbolic links are not allowed/,
+    );
+  } finally {
+    cleanupFixture(fixture);
+  }
+});
+
+test("a safe manifest entry with a missing local file returns 404 without blocking startup", async () => {
+  const fixture = fixtureRoot();
+  fs.unlinkSync(path.join(fixture.root, "photos", "same.jpg"));
+  const server = createExportServer({
+    root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
+    port: 0,
+  });
+  const address = await server.listen();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}${server.privatePrefix()}/photos/same.jpg`,
+    );
+    assert.equal(response.status, 404);
+  } finally {
+    await server.close();
+    cleanupFixture(fixture);
+  }
 });

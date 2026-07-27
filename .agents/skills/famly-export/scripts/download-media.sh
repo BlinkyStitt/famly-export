@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 usage() {
   echo "Usage: download-media.sh <media.json> <output-root> [concurrency]" >&2
@@ -14,6 +15,9 @@ manifest_path=$1
 output_root=$2
 concurrency=${3:-8}
 metadata_dir="$output_root/metadata"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+worker_script="$script_dir/download-media-worker.mjs"
+private_tree_script="$script_dir/private-tree.mjs"
 
 if [[ ! -f "$manifest_path" ]]; then
   echo "Media manifest not found: $manifest_path" >&2
@@ -27,129 +31,23 @@ if [[ ! "$concurrency" =~ ^[0-9]+$ ]] ||
   exit 2
 fi
 
-for required_command in jq curl xargs shasum file sips find grep; do
+for required_command in node jq curl xargs shasum file sips find grep; do
   command -v "$required_command" >/dev/null || {
     echo "$required_command is required" >&2
     exit 1
   }
 done
 
-mkdir -p \
-  "$metadata_dir" \
-  "$output_root/photos" \
-  "$output_root/videos" \
-  "$output_root/files" \
-  "$output_root/message-images" \
-  "$output_root/messages/attachments"
+node "$private_tree_script" harden "$output_root" >/dev/null
+expected_count=$(node "$worker_script" validate "$manifest_path" "$output_root")
 
-jq -e '
-  type == "array" and
-  length > 0 and
-  all(.[];
-    (.mediaId | type == "string" and length > 0) and
-    (.kind == "image" or .kind == "video" or .kind == "file") and
-    (
-      (
-        .sourceType == "home" and
-        (
-          .ownerType == "post" or
-          (.ownerType == "comment" and .kind == "image")
-        )
-      ) or
-      (.sourceType == "message" and .ownerType == "message")
-    ) and
-    (.identity | type == "string" and startswith("v1:")) and
-    (.sourceUrl | type == "string") and
-    (
-      .sourceUrl
-      | test(
-          "^https://([^/?]+\\.)?famly\\.co/" +
-          "|^https://famly[-.][A-Za-z0-9.-]*\\.amazonaws\\.com/"
-        )
-    ) and
-    (.sourceUrl | contains("famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch") | not) and
-    (.relativePath | type == "string") and
-    (
-      .relativePath
-      | test("^(photos|videos|files|message-images|messages/attachments)/")
-    ) and
-    (
-      (
-        .sourceType == "home" and
-        (.ownerType == "post" or .ownerType == "comment") and
-        .kind == "image" and
-        (.relativePath | test("^photos/[^/]+$"))
-      ) or
-      (
-        .sourceType == "message" and
-        .kind == "image" and
-        (.relativePath | test("^message-images/[^/]+$"))
-      ) or
-      (.kind != "image")
-    ) and
-    (.relativePath | contains("\\") | not) and
-    (.relativePath | test("[[:cntrl:]]") | not) and
-    (.relativePath | test("(^|/)\\.\\.(/|$)") | not) and
-    (
-      .expectedMime
-      | IN(
-          "image/jpeg",
-          "image/png",
-          "image/gif",
-          "image/webp",
-          "image/heic",
-          "image/heif",
-          "video/mp4",
-          "application/pdf"
-        )
-    )
-  ) and
-  ((map(.relativePath) | unique | length) == length)
-' "$manifest_path" >/dev/null || {
-  echo "Media manifest failed URL, MIME, uniqueness, or safe-path validation" >&2
-  exit 1
-}
-
-# This snippet runs in child shells. Arguments are passed as NUL-delimited
-# values so spaces and punctuation in safe filenames are preserved.
-# shellcheck disable=SC2016
-download_one='
-  set -euo pipefail
-  source_url=$1
-  target_path=$2
-  part_path="${target_path}.part"
-  mkdir -p "$(dirname "$target_path")"
-  if [[ -s "$target_path" ]]; then
-    exit 0
-  fi
-  curl_args=(
-    --fail
-    --location
-    --silent
-    --show-error
-    --retry 3
-    --retry-all-errors
-    --connect-timeout 15
-    --max-time 300
-    --output "$part_path"
-  )
-  if [[ -s "$part_path" ]]; then
-    curl_args+=(--continue-at -)
-  fi
-  curl "${curl_args[@]}" "$source_url"
-  mv "$part_path" "$target_path"
-'
-
-if ! jq -j --arg root "$output_root" '
-  .[]
-  | .sourceUrl, "\u0000", ($root + "/" + .relativePath), "\u0000"
-' "$manifest_path" |
-  xargs -0 -n 2 -P "$concurrency" bash -c "$download_one" _; then
+if ! jq -j 'range(0; length) | tostring, "\u0000"' "$manifest_path" |
+  xargs -0 -n 32 -P "$concurrency" \
+    node "$worker_script" download "$manifest_path" "$output_root"; then
   echo "One or more media downloads failed; resumable .part files were retained when present" >&2
   exit 1
 fi
 
-expected_count=$(jq 'length' "$manifest_path")
 missing_count=0
 while IFS= read -r relative_path; do
   if [[ ! -s "$output_root/$relative_path" ]]; then
@@ -239,6 +137,7 @@ checksums_tmp="$metadata_dir/media-checksums.sha256.tmp"
   done < <(jq -r '.[].relativePath' "$manifest_path" | LC_ALL=C sort)
 ) >"$checksums_tmp"
 mv "$checksums_tmp" "$metadata_dir/media-checksums.sha256"
+chmod 600 "$metadata_dir/media-checksums.sha256"
 
 total_bytes=0
 while IFS= read -r relative_path; do
@@ -265,6 +164,7 @@ if [[ -f "$summary_path" ]]; then
       | .validation.checksums = "metadata/media-checksums.sha256"
     ' "$summary_path" >"$summary_tmp"
   mv "$summary_tmp" "$summary_path"
+  chmod 600 "$summary_path"
 fi
 
 credential_marker_files=()
@@ -283,6 +183,8 @@ if [[ "${#credential_marker_files[@]}" -ne 0 ]]; then
   printf '%s\n' "${credential_marker_files[@]}" >&2
   exit 1
 fi
+
+node "$private_tree_script" harden "$output_root" >/dev/null
 
 printf 'expected=%s\nactual=%s\npartials=%s\nbytes=%s\nmime=%s\nimages=%s\nsignature=%s\nchecksums=%s\n' \
   "$expected_count" \

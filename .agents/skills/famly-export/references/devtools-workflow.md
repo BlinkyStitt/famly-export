@@ -22,16 +22,19 @@ Before calling a browser tool, run:
 codex mcp get famly-chrome
 ```
 
-Require `chrome-devtools-mcp@1.6.0`, `--autoConnect`,
-`--allowUnrestrictedPaths`, and `--redactNetworkHeaders`. If any item is
-missing, stop before capture, replace the entry as documented in the
-repository `README.md`, and restart Codex. Do not add a secondary save channel
-to compensate for an incorrectly configured server.
+Require `chrome-devtools-mcp@1.6.0`,
+`--browserUrl=http://127.0.0.1:9223`, `--redactNetworkHeaders`,
+`--no-usage-statistics`, `--no-performance-crux`,
+`--no-category-network`, `--no-category-performance`, the exact
+`--blockedUrlPattern=https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch`,
+and `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. Reject `--autoConnect` and
+`--allowUnrestrictedPaths`. If any item is wrong, stop before capture, replace
+the entry as documented in `README.md`, and restart Codex.
 
 ## 2. Select the authenticated Home tab
 
-Call `list_pages`. Select the Famly page in the signed-in Chrome profile. Its
-URL must begin with:
+Call `list_pages`. Select the Famly page in the manually signed-in dedicated
+Famly Chrome profile. Its URL must begin with:
 
 ```text
 https://app.famly.co/#/account/home
@@ -574,12 +577,15 @@ captured message ID, including zero-reaction entries.
 
 ## 9. Save response bodies and workflow evidence
 
-Wait one second for cloned response bodies, then save this exact object with
-`evaluate_script.filePath` set to the absolute path:
+Prepare the only permitted save path from the workspace root:
 
-```text
-<output-root>/metadata/captured-export.json
+```sh
+node .agents/skills/famly-export/scripts/secure-capture.mjs prepare
 ```
+
+Wait one second for cloned response bodies, then save this exact object with
+`evaluate_script.filePath` set to the absolute OS-temporary path printed by
+that command:
 
 ```js
 async () => {
@@ -608,9 +614,23 @@ evidence only. It contains no deliberately captured request headers, request
 bodies, cookies, or access tokens. Never use `get_network_request` to retrieve
 body data because that can expose request headers.
 
+Finalize immediately:
+
+```sh
+node .agents/skills/famly-export/scripts/secure-capture.mjs finalize \
+  '<printed-temp-path>' \
+  .
+```
+
+The finalizer validates current-user ownership, regular-file type, private
+temporary containment, JSON, and schema version 2 before an fsynced atomic
+rename to `metadata/captured-export.json`. On failure it preserves the capture
+at mode `0600` inside its `0700` directory and reports the retry path.
+
 If `evaluate_script.filePath` is denied, stop. Correct the `famly-chrome`
 configuration, restart Codex, and repeat the capture. Do not save through a
-browser download, chunked transfer, or another parallel mechanism.
+browser download, direct repository path, chunked transfer, or parallel
+mechanism.
 
 ## 10. Build, download, and validate
 
@@ -663,12 +683,13 @@ Launch the result with:
 node .agents/skills/famly-export/scripts/serve-export.mjs .
 ```
 
-The default origin is `http://127.0.0.1:4173/`. An optional port argument
-changes the origin and therefore uses separate browser `localStorage`.
-Direct `file://` opening is unsupported. Verify that the server exposes only
-the viewer, four manifests, manifest-listed media, and archive routes; raw
-capture data, directory listings, traversal, and cross-origin archive
-requests must remain inaccessible.
+Open the complete `http://127.0.0.1:4173/#access=<token>` URL printed by the
+server. The fixed shell and module are public; manifests, redacted media,
+original files, and archive APIs require the current
+`/_private/<token>/...` prefix. Missing or wrong tokens, raw capture data,
+directory listings, traversal, absolute-form requests, arbitrary Host values,
+and cross-origin archive requests must remain inaccessible. The stable port
+preserves browser-local favorites across token and server restarts.
 
 MP4 and PDF validation is intentionally signature-level through `file`; it is
 not a deep `ffprobe` or `qpdf` parse. macOS `file` may report a valid MP4 as

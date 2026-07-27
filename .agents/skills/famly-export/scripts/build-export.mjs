@@ -5,6 +5,14 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { mediaIdentity } from "./viewer-app.mjs";
+import { validateFamlyMediaUrl } from "./famly-url.mjs";
+import {
+  atomicWritePrivate,
+  canonicalExportRoot,
+  ensurePrivateDirectory,
+  hardenPrivateTrees,
+  inspectPrivatePath,
+} from "./private-tree.mjs";
 
 const LIST_PAGE_SIZE = 10;
 const MESSAGE_PAGE_SIZE = 20;
@@ -104,22 +112,12 @@ function assertSafeRelativePath(relativePath) {
 }
 
 export function isFamlyHostedUrl(value) {
-  let url;
   try {
-    url = new URL(value);
+    validateFamlyMediaUrl(value);
+    return true;
   } catch {
     return false;
   }
-  if (url.protocol !== "https:") {
-    return false;
-  }
-  const host = url.hostname.toLowerCase();
-  return (
-    host === "famly.co" ||
-    host.endsWith(".famly.co") ||
-    (/^famly[-.][a-z0-9.-]*\.amazonaws\.com$/.test(host) &&
-      !host.includes("killswitch"))
-  );
 }
 
 function originalImageUrl(image) {
@@ -501,6 +499,7 @@ function messageAttachmentMedia({
 
 export function transformCapture(capture) {
   assert(capture && typeof capture === "object", "Capture root must be an object");
+  assert(capture.schemaVersion === 2, "Capture schemaVersion must be exactly 2");
   assert(asArray(capture.feedPages).length > 0, "No Home feed response pages were captured");
   assert(capture.workflow?.home?.stableBottomChecks >= 8, "Home feed did not reach a stable bottom");
 
@@ -766,15 +765,16 @@ export function transformCapture(capture) {
   };
 }
 
-function writeAtomically(filePath, contents) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.tmp`;
-  fs.writeFileSync(temporaryPath, contents, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temporaryPath, filePath);
+function writeAtomically(outputRoot, filePath, contents) {
+  atomicWritePrivate(outputRoot, filePath, contents);
 }
 
-function writeJson(filePath, value) {
-  writeAtomically(filePath, `${JSON.stringify(value, null, 2)}\n`);
+function writeJson(outputRoot, filePath, value) {
+  writeAtomically(
+    outputRoot,
+    filePath,
+    `${JSON.stringify(value, null, 2)}\n`,
+  );
 }
 
 function credentialMarkerFiles(outputRoot) {
@@ -806,27 +806,58 @@ function credentialMarkerFiles(outputRoot) {
 }
 
 export function buildExport(capturePath, outputRoot) {
-  assert(fs.existsSync(capturePath), `Capture file not found: ${capturePath}`);
-  const capture = JSON.parse(fs.readFileSync(capturePath, "utf8"));
+  const canonicalRoot = canonicalExportRoot(outputRoot);
+  hardenPrivateTrees(canonicalRoot);
+  const inspectedCapture = inspectPrivatePath(
+    canonicalRoot,
+    path.resolve(capturePath),
+    { expectedType: "file" },
+  );
+  const capture = JSON.parse(fs.readFileSync(inspectedCapture.path, "utf8"));
   const result = transformCapture(capture);
-  const metadataRoot = path.join(outputRoot, "metadata");
-  const messagesRoot = path.join(outputRoot, "messages");
-  writeJson(path.join(metadataRoot, "posts.json"), result.posts);
-  writeJson(path.join(metadataRoot, "conversations.json"), result.conversations);
-  writeJson(path.join(metadataRoot, "media.json"), result.media);
-  writeJson(path.join(metadataRoot, "export-summary.json"), result.summary);
-  writeAtomically(path.join(messagesRoot, "index.html"), result.html.index);
-  writeAtomically(path.join(messagesRoot, "viewer-app.mjs"), result.html.app);
+  const metadataRoot = ensurePrivateDirectory(
+    canonicalRoot,
+    path.join(canonicalRoot, "metadata"),
+  );
+  const messagesRoot = ensurePrivateDirectory(
+    canonicalRoot,
+    path.join(canonicalRoot, "messages"),
+  );
+  writeJson(canonicalRoot, path.join(metadataRoot, "posts.json"), result.posts);
+  writeJson(
+    canonicalRoot,
+    path.join(metadataRoot, "conversations.json"),
+    result.conversations,
+  );
+  writeJson(canonicalRoot, path.join(metadataRoot, "media.json"), result.media);
+  writeJson(
+    canonicalRoot,
+    path.join(metadataRoot, "export-summary.json"),
+    result.summary,
+  );
+  writeAtomically(
+    canonicalRoot,
+    path.join(messagesRoot, "index.html"),
+    result.html.index,
+  );
+  writeAtomically(
+    canonicalRoot,
+    path.join(messagesRoot, "viewer-app.mjs"),
+    result.html.app,
+  );
   for (const entry of fs.readdirSync(messagesRoot, { withFileTypes: true })) {
     if (
       entry.isFile() &&
       entry.name !== "index.html" &&
       entry.name.endsWith(".html")
     ) {
-      fs.unlinkSync(path.join(messagesRoot, entry.name));
+      const obsoletePath = path.join(messagesRoot, entry.name);
+      inspectPrivatePath(canonicalRoot, obsoletePath, { expectedType: "file" });
+      fs.unlinkSync(obsoletePath);
     }
   }
-  const markerFiles = credentialMarkerFiles(outputRoot);
+  hardenPrivateTrees(canonicalRoot);
+  const markerFiles = credentialMarkerFiles(canonicalRoot);
   assert(
     markerFiles.length === 0,
     `Credential marker found in generated artifact(s): ${markerFiles.join(", ")}`,

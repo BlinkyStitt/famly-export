@@ -1,9 +1,10 @@
-const MANIFEST_URLS = Object.freeze({
+const MANIFEST_PATHS = Object.freeze({
   posts: "/metadata/posts.json",
   conversations: "/metadata/conversations.json",
   media: "/metadata/media.json",
   summary: "/metadata/export-summary.json",
 });
+const ACCESS_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ALLOWED_MEDIA_MIMES = new Set([
   "image/jpeg",
   "image/png",
@@ -16,6 +17,42 @@ const ALLOWED_MEDIA_MIMES = new Set([
 ]);
 
 export const FAVORITES_STORAGE_KEY = "famly-export:favorites:v1";
+export const ACCESS_SESSION_KEY = "famly-export:access:v1";
+
+export function privateRoutePrefix(token) {
+  return ACCESS_TOKEN_PATTERN.test(token)
+    ? `/_private/${token}`
+    : null;
+}
+
+export function consumeAccessToken(windowObject) {
+  const hash = String(windowObject?.location?.hash ?? "");
+  const fragmentMatch = hash.match(/^#access=([A-Za-z0-9_-]{43})$/);
+  let token = fragmentMatch?.[1] ?? null;
+  if (hash) {
+    try {
+      const replacement = `${windowObject.location.pathname}${windowObject.location.search}`;
+      windowObject.history.replaceState(null, "", replacement || "/");
+    } catch {
+      // The fragment remains local even when browser history is unavailable.
+    }
+  }
+  if (token) {
+    try {
+      windowObject.sessionStorage.setItem(ACCESS_SESSION_KEY, token);
+    } catch {
+      // This launch can still use the in-memory fragment token.
+    }
+  } else {
+    try {
+      const stored = windowObject.sessionStorage.getItem(ACCESS_SESSION_KEY);
+      token = ACCESS_TOKEN_PATTERN.test(stored) ? stored : null;
+    } catch {
+      token = null;
+    }
+  }
+  return token;
+}
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -121,12 +158,18 @@ export function isAllowedMediaRecord(entry) {
   return false;
 }
 
-export function safeLocalMediaHref(entry) {
+export function safeLocalMediaHref(entry, accessPrefix) {
   const segments = safeMediaPathSegments(entry);
-  if (!segments || !isAllowedMediaRecord(entry)) {
+  if (
+    !segments ||
+    !isAllowedMediaRecord(entry) ||
+    !/^\/_private\/[A-Za-z0-9_-]{43}$/.test(accessPrefix)
+  ) {
     return null;
   }
-  return `/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`;
+  return `${accessPrefix}/${segments
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
 }
 
 function timestampDetails(value) {
@@ -281,30 +324,37 @@ export class FavoriteSelection {
   }
 }
 
-export async function loadManifests(fetchImplementation = globalThis.fetch) {
+export async function loadManifests(
+  fetchImplementation = globalThis.fetch,
+  accessPrefix,
+) {
   if (typeof fetchImplementation !== "function") {
     throw new Error("This browser cannot load the export manifests.");
   }
-  const keys = Object.keys(MANIFEST_URLS);
+  if (!/^\/_private\/[A-Za-z0-9_-]{43}$/.test(accessPrefix)) {
+    throw new Error("This viewer launch has no valid access token.");
+  }
+  const keys = Object.keys(MANIFEST_PATHS);
   const responses = await Promise.all(
     keys.map(async (key) => {
+      const manifestUrl = `${accessPrefix}${MANIFEST_PATHS[key]}`;
       let response;
       try {
-        response = await fetchImplementation(MANIFEST_URLS[key], {
+        response = await fetchImplementation(manifestUrl, {
           credentials: "same-origin",
         });
       } catch {
-        throw new Error(`Could not load ${MANIFEST_URLS[key]}.`);
+        throw new Error(`Could not load ${MANIFEST_PATHS[key]}.`);
       }
       if (!response?.ok) {
         throw new Error(
-          `Could not load ${MANIFEST_URLS[key]} (HTTP ${response?.status ?? "error"}).`,
+          `Could not load ${MANIFEST_PATHS[key]} (HTTP ${response?.status ?? "error"}).`,
         );
       }
       try {
         return await response.json();
       } catch {
-        throw new Error(`${MANIFEST_URLS[key]} is not valid JSON.`);
+        throw new Error(`${MANIFEST_PATHS[key]} is not valid JSON.`);
       }
     }),
   );
@@ -419,9 +469,10 @@ function renderFavoriteImage(
   entry,
   favorites,
   registerUpdater,
+  accessPrefix,
 ) {
   const identity = mediaIdentity(entry);
-  const href = safeLocalMediaHref(entry);
+  const href = safeLocalMediaHref(entry, accessPrefix);
   if (!identity || !href) {
     return null;
   }
@@ -466,9 +517,13 @@ function renderAttachments(
   entries,
   favorites,
   registerUpdater,
+  accessPrefix,
 ) {
   const supported = entries
-    .map((entry) => ({ entry, href: safeLocalMediaHref(entry) }))
+    .map((entry) => ({
+      entry,
+      href: safeLocalMediaHref(entry, accessPrefix),
+    }))
     .filter(({ href }) => href);
   if (supported.length === 0) {
     return null;
@@ -485,6 +540,7 @@ function renderAttachments(
         entry,
         favorites,
         registerUpdater,
+        accessPrefix,
       );
       if (image) {
         imageGrid.append(image);
@@ -519,6 +575,7 @@ function renderComment(
   mediaIndex,
   favorites,
   registerUpdater,
+  accessPrefix,
 ) {
   const article = element(documentObject, "article", "comment");
   const header = element(documentObject, "header", "entry-header");
@@ -539,6 +596,7 @@ function renderComment(
     mediaForOwner(mediaIndex, "comment", comment?.commentId),
     favorites,
     registerUpdater,
+    accessPrefix,
   );
   if (attachments) {
     article.append(attachments);
@@ -552,6 +610,7 @@ function renderPost(
   mediaIndex,
   favorites,
   registerUpdater,
+  accessPrefix,
 ) {
   const post = timelineEntry.post;
   const article = element(documentObject, "article", "timeline-entry post-entry");
@@ -575,6 +634,7 @@ function renderPost(
     mediaForOwner(mediaIndex, "post", post?.feedItemId),
     favorites,
     registerUpdater,
+    accessPrefix,
   );
   if (attachments) {
     article.append(attachments);
@@ -606,6 +666,7 @@ function renderPost(
             mediaIndex,
             favorites,
             registerUpdater,
+            accessPrefix,
           ),
         );
       });
@@ -620,6 +681,7 @@ function renderMessage(
   mediaIndex,
   favorites,
   registerUpdater,
+  accessPrefix,
 ) {
   const { message, conversation } = timelineEntry;
   const article = element(
@@ -664,6 +726,7 @@ function renderMessage(
     mediaForOwner(mediaIndex, "message", message?.messageId),
     favorites,
     registerUpdater,
+    accessPrefix,
   );
   if (attachments) {
     article.append(attachments);
@@ -700,7 +763,7 @@ function fileViewerGuidance() {
     "This viewer cannot load private JSON through file://.",
     "From the export directory, run:",
     "node .agents/skills/famly-export/scripts/serve-export.mjs .",
-    "Then open http://127.0.0.1:4173/.",
+    "Then open the complete tokenized URL printed by the server.",
   ].join(" ");
 }
 
@@ -728,9 +791,21 @@ export async function startViewer(
     return null;
   }
 
+  const accessToken = consumeAccessToken(windowObject);
+  const accessPrefix = privateRoutePrefix(accessToken);
+  if (!accessPrefix) {
+    status.textContent =
+      "This viewer launch is missing its private access token. Start the local server again and open the complete URL it prints.";
+    status.className = "status error";
+    return null;
+  }
+
   let manifests;
   try {
-    manifests = await loadManifests(windowObject.fetch.bind(windowObject));
+    manifests = await loadManifests(
+      windowObject.fetch.bind(windowObject),
+      accessPrefix,
+    );
   } catch (error) {
     status.textContent =
       error instanceof Error ? error.message : "Could not load the export.";
@@ -766,6 +841,7 @@ export async function startViewer(
             mediaIndex,
             favorites,
             registerUpdater,
+            accessPrefix,
           )
         : renderMessage(
             documentObject,
@@ -773,6 +849,7 @@ export async function startViewer(
             mediaIndex,
             favorites,
             registerUpdater,
+            accessPrefix,
           ),
     );
   }
@@ -785,18 +862,30 @@ export async function startViewer(
     exportStatus.textContent = "Creating ZIP…";
     exportStatus.className = "export-status";
     try {
-      const response = await windowObject.fetch("/api/favorites-archives", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identities: favorites.values() }),
-      });
+      const response = await windowObject.fetch(
+        `${accessPrefix}/api/favorites-archives`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identities: favorites.values() }),
+        },
+      );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.error || `ZIP creation failed (HTTP ${response.status}).`);
       }
       const downloadUrl = new URL(payload.downloadUrl, windowObject.location.href);
-      if (downloadUrl.origin !== windowObject.location.origin) {
+      const expectedDownloadPrefix = `${accessPrefix}/api/favorites-archives/`;
+      if (
+        downloadUrl.origin !== windowObject.location.origin ||
+        !downloadUrl.pathname.startsWith(expectedDownloadPrefix) ||
+        !new RegExp(
+          `^${expectedDownloadPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z0-9_-]{32}$`,
+        ).test(downloadUrl.pathname) ||
+        downloadUrl.search ||
+        downloadUrl.hash
+      ) {
         throw new Error("The server returned an unsafe download URL.");
       }
       const link = element(documentObject, "a");
@@ -815,7 +904,7 @@ export async function startViewer(
     }
   });
 
-  return { favorites, manifests, timeline };
+  return { favorites, manifests, timeline, accessPrefix };
 }
 
 if (typeof document !== "undefined" && typeof window !== "undefined") {
