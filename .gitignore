@@ -7,6 +7,9 @@
 /messages/
 *.part
 *.har
+/.famly-export.lock/
+/.famly-export-transaction.json
+/.famly-export-transaction-*/
 
 # Local operating-system and tool caches.
 /.DS_Store

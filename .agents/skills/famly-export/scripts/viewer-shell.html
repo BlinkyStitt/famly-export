@@ -37,6 +37,34 @@
     .page-header h1 { margin: 0; }
     .status { margin: .35rem 0 0; opacity: .76; }
     .error { color: var(--error); opacity: 1; }
+    .filter-bar {
+      backdrop-filter: blur(12px);
+      background: color-mix(in srgb, Canvas 92%, transparent);
+      border-block: 1px solid var(--border);
+      display: grid;
+      gap: .6rem;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      padding: .75rem max(1rem, calc((100% - 920px) / 2));
+      position: sticky;
+      top: 0;
+      z-index: 9;
+    }
+    .filter-bar label { display: grid; font-size: .82rem; gap: .2rem; }
+    .filter-bar .check { align-items: center; display: flex; gap: .35rem; }
+    .filter-bar input, .filter-bar select, .filter-bar button {
+      border: 1px solid var(--border);
+      border-radius: .35rem;
+      font: inherit;
+      min-height: 2.3rem;
+      padding: .35rem;
+    }
+    .filter-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .health-panel, .result-status {
+      margin-inline: auto;
+      max-width: 920px;
+      padding-inline: 1rem;
+    }
+    #export-health { white-space: pre-wrap; }
     #timeline { padding-bottom: 7rem; }
     .timeline-entry {
       background: var(--surface);
@@ -146,6 +174,22 @@
       padding-left: .8rem;
     }
     .reaction-summary { font-size: .9rem; margin-top: .5rem; opacity: .75; }
+    .history-label {
+      background: color-mix(in srgb, var(--favorite) 24%, transparent);
+      border-radius: .35rem;
+      display: inline-block;
+      font-size: .85rem;
+      margin-block: .4rem;
+      padding: .2rem .45rem;
+    }
+    .metadata-details { margin-top: .65rem; }
+    .metadata-list {
+      display: grid;
+      gap: .25rem .75rem;
+      grid-template-columns: max-content 1fr;
+    }
+    .metadata-list dt { font-weight: 700; }
+    .metadata-list dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
     .message-details > summary {
       cursor: pointer;
       font-weight: 700;
@@ -192,7 +236,43 @@
     <h1>Famly timeline</h1>
     <p id="viewer-status" class="status" role="status">Loading private export…</p>
   </header>
+  <section class="filter-bar" aria-label="Timeline filters">
+    <label>Search
+      <input id="filter-search" type="search" placeholder="Words in any captured field">
+    </label>
+    <label class="check"><input id="filter-home" type="checkbox" checked> Home</label>
+    <label class="check"><input id="filter-messages" type="checkbox" checked> Messages</label>
+    <label>From <input id="filter-date-from" type="date"></label>
+    <label>Through <input id="filter-date-to" type="date"></label>
+    <label>Conversation
+      <select id="filter-conversation"><option value="">All conversations</option></select>
+    </label>
+    <label class="check"><input id="filter-image" type="checkbox"> Images</label>
+    <label class="check"><input id="filter-video" type="checkbox"> Videos</label>
+    <label class="check"><input id="filter-file" type="checkbox"> Files</label>
+    <label>History
+      <select id="filter-history">
+        <option value="all">Current and preserved</option>
+        <option value="current">Current only</option>
+        <option value="preserved">Preserved only</option>
+      </select>
+    </label>
+    <label class="check"><input id="filter-favorites" type="checkbox"> Favorites only</label>
+    <div class="filter-actions">
+      <button id="clear-filters" type="button">Clear filters</button>
+      <button id="clear-favorites" type="button">Clear favorites</button>
+    </div>
+  </section>
+  <details class="health-panel">
+    <summary>Export health</summary>
+    <div id="export-health">Loading verification status…</div>
+  </details>
+  <p id="match-count" class="result-status" role="status"></p>
   <main id="timeline" aria-live="polite"></main>
+  <div id="timeline-sentinel" aria-hidden="true"></div>
+  <p class="result-status">
+    <button id="load-more" type="button" hidden>Load more</button>
+  </p>
   <footer class="favorites-footer">
     <strong id="selected-count">0 selected</strong>
     <button id="export-favorites" type="button" disabled>Export favorites as ZIP</button>

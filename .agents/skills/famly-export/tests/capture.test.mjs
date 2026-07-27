@@ -5,8 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  conversationCheckpointDue,
   finalizeCapture,
+  latestValidCheckpoint,
   prepareCapture,
+  recordCheckpoint,
   sweepStaleCaptures,
 } from "../scripts/secure-capture.mjs";
 
@@ -179,4 +182,57 @@ test("finalization preserves a capture directory with unexpected entries", () =>
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }
+});
+
+test("checkpoints validate phases and newest valid state is resumable", () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-checkpoint-test-"),
+  );
+  const capturePath = prepareCapture({ temporaryRoot });
+  const value = {
+    schemaVersion: 2,
+    capturedAt: "2026-07-26T00:10:00Z",
+    feedPages: [{ data: { feedItems: [{ feedItemId: "post-1" }] } }],
+    workflow: {
+      home: { stableBottomChecks: 8 },
+      lists: {
+        active: { showMoreExhausted: true },
+        archived: { showMoreExhausted: true },
+      },
+      conversations: Object.fromEntries(
+        Array.from({ length: 5 }, (_, index) => [
+          `conversation-${index + 1}`,
+          { terminalShortPage: true },
+        ]),
+      ),
+    },
+  };
+  try {
+    fs.writeFileSync(capturePath, JSON.stringify(value), { mode: 0o600 });
+    const checkpoint = recordCheckpoint(capturePath, "conversations", {
+      temporaryRoot,
+    });
+    assert.equal(checkpoint.completedConversationIds.length, 5);
+    assert.equal(mode(path.join(path.dirname(capturePath), "checkpoint.json")), 0o600);
+    const latest = latestValidCheckpoint({ temporaryRoot });
+    assert.equal(latest.path, capturePath);
+    assert.equal(latest.phase, "conversations");
+    assert.equal(
+      latestValidCheckpoint({
+        temporaryRoot,
+        now: Date.now() + 25 * 60 * 60 * 1_000,
+      }),
+      null,
+    );
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("conversation progress checkpoints are due every five completions", () => {
+  assert.equal(conversationCheckpointDue(0), false);
+  assert.equal(conversationCheckpointDue(4), false);
+  assert.equal(conversationCheckpointDue(5), true);
+  assert.equal(conversationCheckpointDue(10), true);
+  assert.equal(conversationCheckpointDue(11), false);
 });

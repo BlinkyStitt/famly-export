@@ -2,7 +2,11 @@
 set -euo pipefail
 umask 077
 
-profile_path="/Users/bryan/Library/Application Support/Famly Export Chrome"
+if [[ -z "${HOME:-}" || "$HOME" != /* ]]; then
+  echo "The current user's home directory is unavailable" >&2
+  exit 1
+fi
+profile_path="$HOME/Library/Application Support/Famly Export Chrome"
 chrome_app="/Applications/Google Chrome.app"
 debug_port=9223
 
@@ -23,9 +27,25 @@ if [[ "$(stat -f '%u' "$profile_path")" != "$(id -u)" ]]; then
 fi
 chmod 700 "$profile_path"
 
-if lsof -nP -iTCP:"$debug_port" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Debug port $debug_port is already in use" >&2
-  exit 1
+if listener_pid=$(lsof -nP -iTCP:"$debug_port" -sTCP:LISTEN -t 2>/dev/null); then
+  if [[ "$(printf '%s\n' "$listener_pid" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "Debug port $debug_port has multiple listeners" >&2
+    exit 1
+  fi
+  listener_command=$(ps -p "$listener_pid" -o command=)
+  case "$listener_command" in
+    *"Google Chrome"*\
+*"--user-data-dir=$profile_path"*\
+*"--remote-debugging-address=127.0.0.1"*\
+*"--remote-debugging-port=$debug_port"*)
+      printf 'Reusing dedicated Famly Chrome profile: %s\n' "$profile_path"
+      exit 0
+      ;;
+    *)
+      echo "Debug port $debug_port is occupied by an unexpected process" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 open -na "Google Chrome" --args \

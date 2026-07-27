@@ -18,6 +18,7 @@ const ALLOWED_MEDIA_MIMES = new Set([
 
 export const FAVORITES_STORAGE_KEY = "famly-export:favorites:v1";
 export const ACCESS_SESSION_KEY = "famly-export:access:v1";
+export const TIMELINE_BATCH_SIZE = 100;
 
 export function privateRoutePrefix(token) {
   return ACCESS_TOKEN_PATTERN.test(token)
@@ -183,7 +184,7 @@ function timestampDetails(value) {
   return { epoch, iso: new Date(epoch).toISOString() };
 }
 
-export function buildTimeline(posts, conversations) {
+export function buildTimeline(posts, conversations, archive = null) {
   const entries = [];
   asArray(posts).forEach((post, index) => {
     const timestamp = timestampDetails(post?.createdDate);
@@ -197,6 +198,8 @@ export function buildTimeline(posts, conversations) {
       timestamp: timestamp.iso,
       timestampEpoch: timestamp.epoch,
       tieKey: `post:${id}:${index}`,
+      presentInLatest:
+        archive?.stateMaps?.posts?.[id]?.presentInLatest !== false,
       post,
     });
   });
@@ -213,6 +216,8 @@ export function buildTimeline(posts, conversations) {
         timestamp: timestamp.iso,
         timestampEpoch: timestamp.epoch,
         tieKey: `message:${id}:${conversationIndex}:${messageIndex}`,
+        presentInLatest:
+          archive?.stateMaps?.messages?.[id]?.presentInLatest !== false,
         conversation,
         message,
       });
@@ -222,6 +227,123 @@ export function buildTimeline(posts, conversations) {
     (left, right) =>
       right.timestampEpoch - left.timestampEpoch ||
       left.tieKey.localeCompare(right.tieKey),
+  );
+}
+
+export function normalizeSearchText(value) {
+  return displayText(value)
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .toLocaleLowerCase();
+}
+
+function searchValues(entry, mediaIndex) {
+  const record =
+    entry.kind === "post"
+      ? entry.post
+      : {
+          message: entry.message,
+          conversation: {
+            title: entry.conversation?.title,
+            participants: entry.conversation?.participants,
+            recipients: entry.conversation?.recipients,
+            loginReads: entry.conversation?.loginReads,
+          },
+        };
+  const ownerEntries =
+    entry.kind === "post"
+      ? [
+          ...mediaForOwner(mediaIndex, "post", entry.id),
+          ...asArray(entry.post?.comments).flatMap((comment) =>
+            mediaForOwner(mediaIndex, "comment", comment?.commentId),
+          ),
+        ]
+      : mediaForOwner(mediaIndex, "message", entry.id);
+  return normalizeSearchText([
+    record,
+    ownerEntries.map((media) => media.filename),
+  ]);
+}
+
+export function searchTokens(query) {
+  return normalizeSearchText(query).split(/\s+/).filter(Boolean);
+}
+
+export function entryMedia(entry, mediaIndex) {
+  return entry.kind === "post"
+    ? [
+        ...mediaForOwner(mediaIndex, "post", entry.id),
+        ...asArray(entry.post?.comments).flatMap((comment) =>
+          mediaForOwner(mediaIndex, "comment", comment?.commentId),
+        ),
+      ]
+    : mediaForOwner(mediaIndex, "message", entry.id);
+}
+
+function filterKindForMedia(entry) {
+  if (entry?.expectedMime?.startsWith("image/")) return "image";
+  if (entry?.expectedMime === "video/mp4") return "video";
+  return "file";
+}
+
+export function matchesTimelineEntry(
+  entry,
+  filters,
+  mediaIndex,
+  favorites = null,
+) {
+  const sourceEnabled =
+    (entry.kind === "post" && filters.home !== false) ||
+    (entry.kind === "message" && filters.messages !== false);
+  if (!sourceEnabled) return false;
+  const date = entry.timestamp?.slice(0, 10) ?? "";
+  if (filters.dateFrom && date < filters.dateFrom) return false;
+  if (filters.dateTo && date > filters.dateTo) return false;
+  if (
+    filters.conversationId &&
+    entry.conversation?.conversationId !== filters.conversationId
+  ) {
+    return false;
+  }
+  const wantedState = filters.historyState ?? "all";
+  if (
+    (wantedState === "current" && !entry.presentInLatest) ||
+    (wantedState === "preserved" && entry.presentInLatest)
+  ) {
+    return false;
+  }
+  const media = entryMedia(entry, mediaIndex).filter(
+    (item) => item.role !== "video-poster",
+  );
+  const selectedKinds = ["image", "video", "file"].filter(
+    (kind) => filters[kind],
+  );
+  if (
+    selectedKinds.length &&
+    !media.some((item) => selectedKinds.includes(filterKindForMedia(item)))
+  ) {
+    return false;
+  }
+  if (
+    filters.favoritesOnly &&
+    !media.some((item) => favorites?.has(mediaIdentity(item)))
+  ) {
+    return false;
+  }
+  const tokens = searchTokens(filters.query ?? "");
+  if (tokens.length) {
+    const haystack = searchValues(entry, mediaIndex);
+    if (!tokens.every((token) => haystack.includes(token))) return false;
+  }
+  return true;
+}
+
+export function nextTimelineBatch(entries, rendered) {
+  const safeRendered =
+    Number.isInteger(rendered) && rendered >= 0 ? rendered : 0;
+  return asArray(entries).slice(
+    safeRendered,
+    safeRendered + TIMELINE_BATCH_SIZE,
   );
 }
 
@@ -464,6 +586,44 @@ function mediaForOwner(mediaIndex, ownerType, ownerId) {
   return mediaIndex.byOwner.get(`${ownerType}:${ownerId}`) ?? [];
 }
 
+function compactMetadataValue(value) {
+  if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) {
+    return null;
+  }
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function appendMetadataDetails(documentObject, container, title, fields) {
+  const available = Object.entries(fields).filter(
+    ([, value]) => compactMetadataValue(value) != null,
+  );
+  if (!available.length) return;
+  const details = element(documentObject, "details", "metadata-details");
+  details.append(element(documentObject, "summary", null, title));
+  const list = element(documentObject, "dl", "metadata-list");
+  for (const [label, value] of available) {
+    list.append(
+      element(documentObject, "dt", null, label),
+      element(documentObject, "dd", null, compactMetadataValue(value)),
+    );
+  }
+  details.append(list);
+  container.append(details);
+}
+
+function appendHistoryLabel(documentObject, article, timelineEntry) {
+  if (!timelineEntry.presentInLatest) {
+    article.append(
+      element(
+        documentObject,
+        "div",
+        "history-label",
+        "Not seen in latest refresh",
+      ),
+    );
+  }
+}
+
 function renderFavoriteImage(
   documentObject,
   entry,
@@ -512,7 +672,34 @@ function renderFavoriteImage(
   return figure;
 }
 
-export function renderInlineVideo(documentObject, entry, accessPrefix) {
+function favoriteButtonFor(
+  documentObject,
+  entry,
+  favorites,
+  registerUpdater,
+) {
+  if (!favorites || entry?.role === "video-poster") return null;
+  const identity = mediaIdentity(entry);
+  if (!identity) return null;
+  const button = element(documentObject, "button", "favorite-button");
+  button.type = "button";
+  const update = () => {
+    const selected = favorites.has(identity);
+    button.setAttribute("aria-pressed", String(selected));
+    button.textContent = selected ? "★ Favorited" : "☆ Favorite";
+  };
+  button.addEventListener("click", () => favorites.toggle(identity));
+  registerUpdater?.(update);
+  update();
+  return button;
+}
+
+export function renderInlineVideo(
+  documentObject,
+  entry,
+  accessPrefix,
+  { poster = null, favorites = null, registerUpdater = null } = {},
+) {
   if (entry?.kind !== "video" && entry?.expectedMime !== "video/mp4") {
     return null;
   }
@@ -528,6 +715,8 @@ export function renderInlineVideo(documentObject, entry, accessPrefix) {
   video.preload = "metadata";
   video.playsInline = true;
   video.setAttribute("aria-label", filename);
+  const posterHref = poster ? safeLocalMediaHref(poster, accessPrefix) : null;
+  if (posterHref) video.poster = posterHref;
 
   const caption = element(documentObject, "figcaption", "video-actions");
   const originalLink = element(
@@ -538,6 +727,13 @@ export function renderInlineVideo(documentObject, entry, accessPrefix) {
   );
   originalLink.href = href;
   caption.append(originalLink);
+  const favorite = favoriteButtonFor(
+    documentObject,
+    entry,
+    favorites,
+    registerUpdater,
+  );
+  if (favorite) caption.append(favorite);
   figure.append(video, caption);
   return figure;
 }
@@ -580,10 +776,21 @@ function renderAttachments(
   const imageGrid = element(documentObject, "div", "image-grid");
   const videoGrid = element(documentObject, "div", "video-grid");
   const fileList = element(documentObject, "ul", "file-list");
+  const posters = new Map(
+    supported
+      .filter(({ entry }) => entry.role === "video-poster")
+      .map(({ entry }) => [
+        String(entry.mediaId).replace(/-poster$/, ""),
+        entry,
+      ]),
+  );
   let images = 0;
   let videos = 0;
   let files = 0;
   for (const { entry, href } of supported) {
+    if (entry.role === "video-poster") {
+      continue;
+    }
     if (entry.kind === "image") {
       const image = renderFavoriteImage(
         documentObject,
@@ -597,7 +804,11 @@ function renderAttachments(
         images += 1;
       }
     } else if (entry.kind === "video" || entry.expectedMime === "video/mp4") {
-      const video = renderInlineVideo(documentObject, entry, accessPrefix);
+      const video = renderInlineVideo(documentObject, entry, accessPrefix, {
+        poster: posters.get(entry.mediaId),
+        favorites,
+        registerUpdater,
+      });
       if (video) {
         videoGrid.append(video);
         videos += 1;
@@ -612,6 +823,13 @@ function renderAttachments(
       );
       link.href = href;
       item.append(link);
+      const favorite = favoriteButtonFor(
+        documentObject,
+        entry,
+        favorites,
+        registerUpdater,
+      );
+      if (favorite) item.append(" ", favorite);
       fileList.append(item);
       files += 1;
     }
@@ -650,6 +868,11 @@ function renderComment(
   const body = element(documentObject, "div", "entry-body");
   appendLinkifiedText(documentObject, body, comment?.body);
   article.append(header, body);
+  appendMetadataDetails(documentObject, article, "Comment details", {
+    "Likes": comment?.likes,
+    "Liked by current user": comment?.liked,
+    "Recipients": comment?.receivers ?? comment?.recipients,
+  });
   const attachments = renderAttachments(
     documentObject,
     mediaForOwner(mediaIndex, "comment", comment?.commentId),
@@ -688,6 +911,24 @@ function renderPost(
   const body = element(documentObject, "div", "entry-body");
   appendLinkifiedText(documentObject, body, postBody(post));
   article.append(label, header, body);
+  appendHistoryLabel(documentObject, article, timelineEntry);
+  const invoice = post?.embed?.invoice;
+  appendMetadataDetails(documentObject, article, "Post details", {
+    "Recipients": post?.receivers ?? post?.embed?.recipients,
+    "Likes": post?.likes,
+    "Observation": post?.embed?.observation ?? post?.embed?.observationId,
+    "Associated children": post?.embed?.children ?? post?.embed?.child,
+    "Event title": post?.embed?.event?.title ?? post?.embed?.title,
+    "Event schedule": post?.embed?.event?.schedule ?? post?.embed?.schedule,
+    "Event timezone": post?.embed?.event?.timezone ?? post?.embed?.timezone,
+    "Event RSVP": post?.embed?.event?.rsvp ?? post?.embed?.rsvp,
+    "Invoice status": invoice?.status,
+    "Invoice date": invoice?.date,
+    "Invoice due": invoice?.due,
+    "Invoice exact amount": invoice?.amount,
+    "Invoice payer": invoice?.payer,
+    "Invoice lines": invoice?.lines,
+  });
   const attachments = renderAttachments(
     documentObject,
     mediaForOwner(mediaIndex, "post", post?.feedItemId),
@@ -797,6 +1038,13 @@ function renderMessage(
     body,
   );
   article.append(label, header, context, disclosure);
+  appendHistoryLabel(documentObject, article, timelineEntry);
+  appendMetadataDetails(documentObject, disclosure, "Read and reaction details", {
+    "Message read state": message?.unread === true ? "Unread at capture" : "Read",
+    "Message readers": message?.loginReads,
+    "Conversation readers": conversation?.loginReads,
+    "Reaction details": message?.reactionSummary,
+  });
   const attachments = renderAttachments(
     documentObject,
     messageMedia,
@@ -891,7 +1139,7 @@ export async function startViewer(
 
   const mediaIndex = indexMedia(manifests.media);
   const favoriteIdentities = [...mediaIndex.byIdentity]
-    .filter(([, entry]) => entry.kind === "image")
+    .filter(([, entry]) => entry.role !== "video-poster")
     .map(([identity]) => identity);
   const favorites = new FavoriteSelection(
     favoriteIdentities,
@@ -907,28 +1155,155 @@ export async function startViewer(
   };
   favorites.subscribe(updateFooter);
 
-  const timeline = buildTimeline(manifests.posts, manifests.conversations);
-  for (const timelineEntry of timeline) {
-    timelineRoot.append(
-      timelineEntry.kind === "post"
-        ? renderPost(
-            documentObject,
-            timelineEntry,
-            mediaIndex,
-            favorites,
-            registerUpdater,
-            accessPrefix,
-          )
-        : renderMessage(
-            documentObject,
-            timelineEntry,
-            mediaIndex,
-            favorites,
-            registerUpdater,
-            accessPrefix,
-          ),
-    );
+  const timeline = buildTimeline(
+    manifests.posts,
+    manifests.conversations,
+    manifests.summary.archive,
+  );
+  const controls = {
+    query: documentObject.querySelector("#filter-search"),
+    home: documentObject.querySelector("#filter-home"),
+    messages: documentObject.querySelector("#filter-messages"),
+    dateFrom: documentObject.querySelector("#filter-date-from"),
+    dateTo: documentObject.querySelector("#filter-date-to"),
+    conversationId: documentObject.querySelector("#filter-conversation"),
+    image: documentObject.querySelector("#filter-image"),
+    video: documentObject.querySelector("#filter-video"),
+    file: documentObject.querySelector("#filter-file"),
+    historyState: documentObject.querySelector("#filter-history"),
+    favoritesOnly: documentObject.querySelector("#filter-favorites"),
+    clear: documentObject.querySelector("#clear-filters"),
+    clearFavorites: documentObject.querySelector("#clear-favorites"),
+    loadMore: documentObject.querySelector("#load-more"),
+    sentinel: documentObject.querySelector("#timeline-sentinel"),
+    matchCount: documentObject.querySelector("#match-count"),
+    health: documentObject.querySelector("#export-health"),
+  };
+  const filtersFromControls = () => ({
+    query: controls.query?.value ?? "",
+    home: controls.home?.checked ?? true,
+    messages: controls.messages?.checked ?? true,
+    dateFrom: controls.dateFrom?.value ?? "",
+    dateTo: controls.dateTo?.value ?? "",
+    conversationId: controls.conversationId?.value ?? "",
+    image: controls.image?.checked ?? false,
+    video: controls.video?.checked ?? false,
+    file: controls.file?.checked ?? false,
+    historyState: controls.historyState?.value ?? "all",
+    favoritesOnly: controls.favoritesOnly?.checked ?? false,
+  });
+  if (controls.conversationId) {
+    const conversations = manifests.conversations
+      .slice()
+      .sort((left, right) =>
+        conversationTitle(left).localeCompare(conversationTitle(right)),
+      );
+    for (const conversation of conversations) {
+      const option = element(
+        documentObject,
+        "option",
+        null,
+        conversationTitle(conversation),
+      );
+      option.value = conversation.conversationId;
+      controls.conversationId.append(option);
+    }
   }
+  let matching = [];
+  let rendered = 0;
+  const renderMore = () => {
+    const next = nextTimelineBatch(matching, rendered);
+    for (const timelineEntry of next) {
+      timelineRoot.append(
+        timelineEntry.kind === "post"
+          ? renderPost(
+              documentObject,
+              timelineEntry,
+              mediaIndex,
+              favorites,
+              registerUpdater,
+              accessPrefix,
+            )
+          : renderMessage(
+              documentObject,
+              timelineEntry,
+              mediaIndex,
+              favorites,
+              registerUpdater,
+              accessPrefix,
+            ),
+      );
+    }
+    rendered += next.length;
+    if (controls.loadMore) {
+      controls.loadMore.hidden = rendered >= matching.length;
+      controls.loadMore.textContent = `Load more (${matching.length - rendered} remaining)`;
+    }
+  };
+  const applyFilters = () => {
+    matching = timeline.filter((entry) =>
+      matchesTimelineEntry(entry, filtersFromControls(), mediaIndex, favorites),
+    );
+    rendered = 0;
+    timelineRoot.replaceChildren();
+    renderMore();
+    if (controls.matchCount) {
+      controls.matchCount.textContent = `${matching.length} matching entries`;
+    }
+  };
+  const inputControls = Object.values(controls).filter(
+    (control) =>
+      control &&
+      ["INPUT", "SELECT"].includes(String(control.tagName).toUpperCase()),
+  );
+  inputControls.forEach((control) => {
+    control.addEventListener("input", applyFilters);
+    control.addEventListener("change", applyFilters);
+  });
+  controls.loadMore?.addEventListener("click", renderMore);
+  controls.clear?.addEventListener("click", () => {
+    if (controls.query) controls.query.value = "";
+    if (controls.home) controls.home.checked = true;
+    if (controls.messages) controls.messages.checked = true;
+    if (controls.dateFrom) controls.dateFrom.value = "";
+    if (controls.dateTo) controls.dateTo.value = "";
+    if (controls.conversationId) controls.conversationId.value = "";
+    if (controls.image) controls.image.checked = false;
+    if (controls.video) controls.video.checked = false;
+    if (controls.file) controls.file.checked = false;
+    if (controls.historyState) controls.historyState.value = "all";
+    if (controls.favoritesOnly) controls.favoritesOnly.checked = false;
+    applyFilters();
+  });
+  controls.clearFavorites?.addEventListener("click", () => {
+    favorites.selected.clear();
+    favorites.persist();
+    favorites.emit();
+    applyFilters();
+  });
+  if (controls.sentinel && typeof windowObject.IntersectionObserver === "function") {
+    const observer = new windowObject.IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) renderMore();
+    });
+    observer.observe(controls.sentinel);
+  }
+  favorites.subscribe(() => {
+    if (controls.favoritesOnly?.checked) applyFilters();
+  });
+  if (controls.health) {
+    const archiveCounts = manifests.summary.archive?.counts ?? {};
+    controls.health.textContent = [
+      `Captured: ${manifests.summary.capturedAt ?? "unknown"}`,
+      `Date range: ${manifests.summary.archive?.dateRange?.oldest ?? manifests.summary.home?.oldestPost ?? "unknown"} to ${manifests.summary.archive?.dateRange?.newest ?? manifests.summary.home?.newestPost ?? "unknown"}`,
+      `Current/preserved posts: ${archiveCounts.posts?.current ?? manifests.posts.length}/${archiveCounts.posts?.preserved ?? 0}`,
+      `Current/preserved messages: ${archiveCounts.messages?.current ?? timeline.filter((entry) => entry.kind === "message").length}/${archiveCounts.messages?.preserved ?? 0}`,
+      `Total bytes: ${manifests.summary.validation?.totalBytes ?? "not recorded"}`,
+      `Unsupported: ${manifests.summary.media?.unsupported ?? 0}`,
+      `Excluded UI assets: ${manifests.summary.media?.excludedUiAssets ?? 0}`,
+      `Verification: ${manifests.summary.validation?.checksums ?? "not verified"}`,
+    ].join("\n");
+  }
+  applyFilters();
   status.textContent = summaryText(manifests);
   status.className = "status";
   updateFooter();

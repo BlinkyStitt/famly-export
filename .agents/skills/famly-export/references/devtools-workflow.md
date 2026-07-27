@@ -575,17 +575,13 @@ intentional and required completeness evidence. Do not advance to the next
 conversation until `MessageReactions` contains an explicit entry for every
 captured message ID, including zero-reaction entries.
 
-## 9. Save response bodies and workflow evidence
+## 9. Save response bodies, checkpoints, and workflow evidence
 
-Prepare the only permitted save path from the workspace root:
-
-```sh
-node .agents/skills/famly-export/scripts/secure-capture.mjs prepare
-```
-
-Wait one second for cloned response bodies, then save this exact object with
-`evaluate_script.filePath` set to the absolute OS-temporary path printed by
-that command:
+The one-command runner supplies the only permitted absolute OS-temporary save
+path. Do not prepare a second path. After Home, after both conversation lists,
+and after each five completed conversations, wait one second for cloned
+response bodies and save this exact object with `evaluate_script.filePath` set
+to that path:
 
 ```js
 async () => {
@@ -609,52 +605,36 @@ async () => {
 }
 ```
 
+After each save, record its validated phase:
+
+```sh
+node .agents/skills/famly-export/scripts/secure-capture.mjs checkpoint \
+  '<runner-provided-temp-path>' \
+  '<home|conversation-lists|conversations|complete>'
+```
+
 This file contains the selected response bodies and browser-completeness
 evidence only. It contains no deliberately captured request headers, request
 bodies, cookies, or access tokens. Never use `get_network_request` to retrieve
 body data because that can expose request headers.
 
-Finalize immediately:
-
-```sh
-node .agents/skills/famly-export/scripts/secure-capture.mjs finalize \
-  '<printed-temp-path>' \
-  .
-```
-
-The finalizer validates current-user ownership, regular-file type, private
-temporary containment, JSON, and schema version 2 before an fsynced atomic
-rename to `metadata/captured-export.json`. On failure it preserves the capture
-at mode `0600` inside its `0700` directory and reports the retry path.
+The runner validates the final contract, stages the completed capture, and
+keeps the newest valid checkpoint after a failed phase. A later
+`./famly-export` resumes a valid checkpoint younger than 24 hours.
 
 If `evaluate_script.filePath` is denied, stop. Correct the `famly-chrome`
 configuration, restart Codex, and repeat the capture. Do not save through a
 browser download, direct repository path, chunked transfer, or parallel
 mechanism.
 
-## 10. Build, download, and validate
+## 10. Return the capture contract
 
-From the workspace root:
+Return only the JSON success/failure contract required by the runner. The
+runner immediately builds, merges, downloads, validates, and transactionally
+publishes because signed media URLs expire. Verified existing files are reused;
+missing or corrupt content is replaced from fresh URLs.
 
-```sh
-node .agents/skills/famly-export/scripts/build-export.mjs \
-  metadata/captured-export.json \
-  .
-
-bash .agents/skills/famly-export/scripts/download-media.sh \
-  metadata/media.json \
-  . \
-  8
-```
-
-Run the downloader immediately because all signed media URLs expire. Completed
-Home post/comment photos in `photos/` and Message images in `message-images/`
-are preserved and skipped. Explicit non-image Message files remain under
-`messages/attachments/`. If a signed URL expires, repeat the complete capture
-and rerun; completed files remain in place. Never substitute `url_big` or
-another preview for a missing original comment image.
-
-Read `metadata/export-summary.json` and verify:
+The runner verifies:
 
 - Home API and DOM post IDs match;
 - active-plus-archived IDs equal the captured detail IDs;
@@ -670,21 +650,16 @@ Read `metadata/export-summary.json` and verify:
 - no `.part` files remain;
 - MIME and supported-image decoder validation passed;
 - consolidated SHA-256 checksums exist;
-- unsupported media is explicitly reported;
+- unsupported recognized content is zero and excluded UI assets are counted;
 - no credential marker file was reported.
 - the fixed viewer shell and module contain no exported private values, load
   the four manifests through the loopback server, and pass the timeline,
   safe-DOM, original-image, favorites, storage, server, and real ZIP fixture
   tests.
 
-Launch the result with:
-
-```sh
-node .agents/skills/famly-export/scripts/serve-export.mjs .
-```
-
-Open the complete `http://127.0.0.1:4173/#access=<token>` URL printed by the
-server. The fixed shell and module are public; manifests, redacted media,
+After successful publication the runner starts and opens the complete
+`http://127.0.0.1:4173/#access=<token>` URL. The fixed shell and module are
+public; manifests, redacted media,
 original files, and archive APIs require the current
 `/_private/<token>/...` prefix. Missing or wrong tokens, raw capture data,
 directory listings, traversal, absolute-form requests, arbitrary Host values,

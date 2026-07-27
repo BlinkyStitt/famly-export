@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   buildExport,
+  mergeHistoricalExport,
   safeFilename,
   transformCapture,
 } from "../scripts/build-export.mjs";
@@ -428,7 +429,7 @@ test("build writes a fixed manifest-backed viewer shell without private records"
   );
 });
 
-test("unsupported comment media is reported without entering the manifest", () => {
+test("unsupported recognized content media fails instead of being silently omitted", () => {
   const capture = fixtureCapture();
   capture.feedPages[0].data.feedItems[0].comments[0].images.push({
     imageId: "unsupported-comment-image",
@@ -440,29 +441,9 @@ test("unsupported comment media is reported without entering the manifest", () =
   capture.feedPages[1].data.feedItems[0] = structuredClone(
     capture.feedPages[0].data.feedItems[0],
   );
-  const result = transformCapture(capture);
-  assert.equal(result.summary.home.commentImageReferences, 6);
-  assert.equal(result.summary.media.homeCommentImages, 5);
-  assert.deepEqual(
-    result.summary.media.unsupportedItems.find(
-      (item) => item.mediaId === "unsupported-comment-image",
-    ),
-    {
-      mediaId: "unsupported-comment-image",
-      sourceType: "home",
-      ownerType: "comment",
-      ownerId: "comment-with-images",
-      conversationId: null,
-      kind: "image",
-      filename:
-        "2026-01-03_comment-with-images_unsupported-comment-image.bmp",
-      reason: "unsupported-extension:bmp",
-    },
-  );
-  assert.ok(
-    !result.media.some(
-      (entry) => entry.mediaId === "unsupported-comment-image",
-    ),
+  assert.throws(
+    () => transformCapture(capture),
+    /Recognized content attachment coverage failed:.*unsupported-extension:bmp/,
   );
 });
 
@@ -503,6 +484,67 @@ test("safeFilename removes traversal and control characters", () => {
   assert.equal(safeFilename("../../bad\u0000 name.pdf"), "bad name.pdf");
   assert.equal(safeFilename(".."), "attachment");
   assert.equal(safeFilename("folder\\nested\\safe.pdf"), "safe.pdf");
+});
+
+test("invoice PDFs and video posters are first-class media while history is preserved", () => {
+  const capture = fixtureCapture();
+  const post = capture.feedPages[0].data.feedItems[0];
+  post.videos[0].thumbnailUrl =
+    "https://img.famly.co/video/poster.jpg?signature=fresh";
+  post.embed = {
+    invoice: {
+      id: "invoice-26",
+      invoiceNo: 26,
+      date: "2026-01-02",
+      due: "2026-01-30",
+      amount: 12345,
+      pdf: "https://famly-de.s3.eu-central-1.amazonaws.com/invoices/26.pdf?signature=fresh",
+      payer: { name: "Payer" },
+      lines: [{ title: "Care", amount: 12345 }],
+    },
+  };
+  capture.feedPages[1].data.feedItems[0] = structuredClone(post);
+  const current = transformCapture(capture);
+  assert.equal(current.summary.media.invoicePdfs, 1);
+  assert.equal(current.summary.media.videoPosters, 1);
+  assert.equal(
+    current.media.find((entry) => entry.role === "invoice-pdf").mediaId,
+    "invoice-26",
+  );
+  assert.equal(
+    current.media.find((entry) => entry.role === "video-poster").kind,
+    "image",
+  );
+
+  const oldPost = {
+    feedItemId: "preserved-post",
+    createdDate: "2025-01-01T00:00:00Z",
+  };
+  const previousConversation = structuredClone(current.conversations[0]);
+  previousConversation.messages.push({
+    messageId: "preserved-message",
+    createdAt: "2025-01-01T00:00:00Z",
+  });
+  const merged = mergeHistoricalExport(current, {
+    posts: [oldPost, structuredClone(current.posts[0])],
+    conversations: [previousConversation],
+    media: [],
+    summary: { capturedAt: "2025-01-02T00:00:00Z" },
+  });
+  assert.equal(merged.summary.manifestSchemaVersion, 3);
+  assert.equal(
+    merged.summary.archive.stateMaps.posts["preserved-post"].presentInLatest,
+    false,
+  );
+  assert.equal(
+    merged.summary.archive.stateMaps.messages["preserved-message"].presentInLatest,
+    false,
+  );
+  assert.ok(
+    merged.conversations[0].messages.some(
+      (message) => message.messageId === "preserved-message",
+    ),
+  );
 });
 
 test("capture hook blocks the exact Famly killswitch without calling fetch", async () => {

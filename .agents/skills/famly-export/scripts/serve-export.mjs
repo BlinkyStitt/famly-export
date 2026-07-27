@@ -70,12 +70,8 @@ function isSafeRelativePath(relativePath) {
   return !segments.includes("..") && !segments.includes(".");
 }
 
-function isImageRecord(entry) {
-  return (
-    entry?.kind === "image" &&
-    typeof entry?.expectedMime === "string" &&
-    entry.expectedMime.startsWith("image/")
-  );
+function isFavoriteAttachment(entry) {
+  return isAllowedMediaRecord(entry) && entry?.role !== "video-poster";
 }
 
 function pathInsideRoot(root, relativePath) {
@@ -626,12 +622,12 @@ export function createExportServer({
           .filter(Boolean);
         if (
           entries.length !== body.identities.length ||
-          entries.some((entry) => !isImageRecord(entry))
+          entries.some((entry) => !isFavoriteAttachment(entry))
         ) {
           sendError(
             response,
             400,
-            "Every selected identity must match a current image record",
+            "Every selected identity must match a real manifest attachment",
           );
           return;
         }

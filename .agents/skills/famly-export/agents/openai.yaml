@@ -1,7 +1,7 @@
 interface:
   display_name: "Famly Export"
   short_description: "Export Famly Home, Messages, and original media"
-  default_prompt: "Use $famly-export from the manually signed-in dedicated Famly Chrome profile to export the complete Home feed and all active and archived Messages, with original media, private manifests, and the token-authenticated local timeline viewer."
+  default_prompt: "Run ./famly-export to capture or resume the complete Famly Home and active/archived Messages backup, preserve history, verify original media, publish transactionally, and open the authenticated filterable viewer."
 dependencies:
   tools:
     - type: "mcp"

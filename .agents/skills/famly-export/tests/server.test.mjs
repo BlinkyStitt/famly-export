@@ -505,6 +505,72 @@ test("ZIP is private, flat, checksum-preserving, and one-time", async (t) => {
   assert.equal(secondDownload.status, 404);
 });
 
+test("ZIP accepts image, video, and file attachments but rejects generated posters", async (t) => {
+  const fixture = fixtureRoot();
+  fs.mkdirSync(path.join(fixture.root, "videos", "2026"), { recursive: true });
+  fs.mkdirSync(path.join(fixture.root, "files", "2026"), { recursive: true });
+  const video = fixtureEntry({
+    mediaId: "video-1",
+    kind: "video",
+    role: "attachment",
+    expectedMime: "video/mp4",
+    relativePath: "videos/2026/video.mp4",
+    filename: "video.mp4",
+    sourceUrl:
+      "https://famly-video-storage.s3.eu-central-1.amazonaws.com/video.mp4",
+  });
+  const file = fixtureEntry({
+    mediaId: "invoice-1",
+    kind: "file",
+    role: "invoice-pdf",
+    expectedMime: "application/pdf",
+    relativePath: "files/2026/invoice.pdf",
+    filename: "invoice.pdf",
+    sourceUrl:
+      "https://famly-de.s3.eu-central-1.amazonaws.com/invoice.pdf",
+  });
+  const poster = fixtureEntry({
+    mediaId: "video-1-poster",
+    role: "video-poster",
+    relativePath: "photos/poster.jpg",
+    filename: "poster.jpg",
+  });
+  const entries = [...fixture.entries, video, file, poster];
+  fs.writeFileSync(
+    path.join(fixture.root, "metadata", "media.json"),
+    JSON.stringify(entries),
+  );
+  fs.writeFileSync(path.join(fixture.root, video.relativePath), "video");
+  fs.writeFileSync(path.join(fixture.root, file.relativePath), "pdf");
+  fs.writeFileSync(path.join(fixture.root, poster.relativePath), "poster");
+  const localServer = createExportServer({
+    root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
+    port: 0,
+  });
+  const address = await localServer.listen();
+  const origin = `http://127.0.0.1:${address.port}`;
+  const endpoint = `${origin}${localServer.privatePrefix()}/api/favorites-archives`;
+  t.after(async () => {
+    await localServer.close();
+    cleanupFixture(fixture);
+  });
+  const creation = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: origin },
+    body: JSON.stringify({
+      identities: [fixture.entries[0].identity, video.identity, file.identity],
+    }),
+  });
+  assert.equal(creation.status, 201);
+  const rejected = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: origin },
+    body: JSON.stringify({ identities: [poster.identity] }),
+  });
+  assert.equal(rejected.status, 400);
+});
+
 test("startup removes stale crash remnants but preserves active archive directories", () => {
   const temporaryRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "famly-stale-archives-test-"),

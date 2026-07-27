@@ -175,6 +175,7 @@ function addMediaEntry({
   sourceUrl,
   relativePath,
   filename,
+  role = "attachment",
 }) {
   const descriptor = {
     mediaId: typeof mediaId === "string" ? mediaId : null,
@@ -183,6 +184,7 @@ function addMediaEntry({
     ownerId,
     conversationId,
     kind,
+    role,
   };
   if (!descriptor.mediaId) {
     unsupported.push({ ...descriptor, reason: "missing-media-id" });
@@ -396,6 +398,36 @@ function createHomeMedia(posts, media, mediaKeys, unsupported) {
         relativePath: `videos/${year}/${filename}`,
         filename: sourceName,
       });
+      if (typeof video?.thumbnailUrl === "string" && video.thumbnailUrl) {
+        const posterId = `${mediaId}-poster`;
+        const posterName = mediaFilename(
+          null,
+          video.thumbnailUrl,
+          `${posterId}.jpg`,
+        );
+        const posterExtension =
+          extensionFromName(posterName) ||
+          extensionFromName(video.thumbnailUrl) ||
+          "jpg";
+        const posterDisplayName = extensionFromName(posterName)
+          ? posterName
+          : `${posterName}.${posterExtension}`;
+        const posterFilename = `${date}_${safeId(postId, "Post ID")}_${safeId(posterId, "Video poster ID")}.${posterExtension}`;
+        addMediaEntry({
+          media,
+          mediaKeys,
+          unsupported,
+          mediaId: posterId,
+          sourceType: "home",
+          ownerType: "post",
+          ownerId: postId,
+          kind: "image",
+          role: "video-poster",
+          sourceUrl: video.thumbnailUrl,
+          relativePath: `photos/${posterFilename}`,
+          filename: posterDisplayName,
+        });
+      }
     }
     for (const file of asArray(post.files)) {
       const mediaId = file?.fileId;
@@ -416,7 +448,267 @@ function createHomeMedia(posts, media, mediaKeys, unsupported) {
         filename: sourceName,
       });
     }
+    const invoice = post?.embed?.invoice;
+    if (
+      invoice &&
+      typeof invoice === "object" &&
+      !Array.isArray(invoice) &&
+      (invoice.id || invoice.invoiceId || invoice.invoiceNo)
+    ) {
+      const invoiceId = String(
+        invoice.id ?? invoice.invoiceId ?? invoice.invoiceNo,
+      );
+      const sourceName = safeFilename(
+        `Invoice-${invoice.invoiceNo ?? invoiceId}.pdf`,
+        `${invoiceId}.pdf`,
+      );
+      const filename = `${date}_${safeId(postId, "Post ID")}_${safeId(invoiceId, "Invoice ID")}_${sourceName}`;
+      addMediaEntry({
+        media,
+        mediaKeys,
+        unsupported,
+        mediaId: invoiceId,
+        sourceType: "home",
+        ownerType: "post",
+        ownerId: postId,
+        kind: "file",
+        role: "invoice-pdf",
+        sourceUrl: invoice.pdf,
+        relativePath: `files/${year}/${filename}`,
+        filename: sourceName,
+      });
+    }
   }
+}
+
+function countExcludedUiAssets(posts, conversations) {
+  let count = 0;
+  const visit = (value, key = "", parentKey = "") => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key, parentKey));
+      return;
+    }
+    if (!value || typeof value !== "object") {
+      if (
+        typeof value === "string" &&
+        /^https:\/\//i.test(value) &&
+        (/avatar|profile.?image|login.?image/i.test(key) ||
+          (key === "image" &&
+            /sender|author|participant|reader|login|seen|like/i.test(parentKey)) ||
+          (key === "thumbnail" && parentKey !== "videos"))
+      ) {
+        count += 1;
+      }
+      return;
+    }
+    for (const [childKey, child] of Object.entries(value)) {
+      visit(child, childKey, key);
+    }
+  };
+  posts.forEach((post) => visit(post));
+  conversations.forEach((conversation) => visit(conversation));
+  return count;
+}
+
+function stateFor(
+  previousState,
+  id,
+  capturedAt,
+  presentInLatest,
+  previousSeenAt = null,
+) {
+  const previous = previousState?.[id];
+  return {
+    firstSeen: previous?.firstSeen ?? previousSeenAt ?? capturedAt,
+    lastSeen:
+      presentInLatest
+        ? capturedAt
+        : previous?.lastSeen ?? previousSeenAt ?? capturedAt,
+    presentInLatest,
+  };
+}
+
+function stateCounts(stateMap) {
+  const values = Object.values(stateMap);
+  const current = values.filter((value) => value.presentInLatest).length;
+  return { current, preserved: values.length - current, total: values.length };
+}
+
+export function mergeHistoricalExport(current, previous = null) {
+  const capturedAt = current.summary.capturedAt ?? new Date().toISOString();
+  const previousArchive = previous?.summary?.archive?.stateMaps ?? {};
+  const previousCapturedAt = previous?.summary?.capturedAt ?? null;
+  const previousPosts = asArray(previous?.posts);
+  const previousConversations = asArray(previous?.conversations);
+  const previousMedia = asArray(previous?.media);
+
+  const latestPostIds = new Set(current.posts.map((post) => post.feedItemId));
+  const previousPostIds = new Set(previousPosts.map((post) => post?.feedItemId));
+  const postsById = new Map(
+    previousPosts
+      .filter((post) => typeof post?.feedItemId === "string")
+      .map((post) => [post.feedItemId, post]),
+  );
+  current.posts.forEach((post) => postsById.set(post.feedItemId, post));
+  const posts = [...postsById.values()].sort(
+    (left, right) =>
+      String(right.createdDate).localeCompare(String(left.createdDate)) ||
+      String(left.feedItemId).localeCompare(String(right.feedItemId)),
+  );
+
+  const previousConversationMap = new Map(
+    previousConversations
+      .filter((conversation) => typeof conversation?.conversationId === "string")
+      .map((conversation) => [conversation.conversationId, conversation]),
+  );
+  const latestConversationIds = new Set(
+    current.conversations.map((conversation) => conversation.conversationId),
+  );
+  const latestMessageIds = new Set();
+  const previousMessageIds = new Set(
+    previousConversations.flatMap((conversation) =>
+      asArray(conversation?.messages).map((message) => message?.messageId),
+    ),
+  );
+  const conversationsById = new Map(previousConversationMap);
+  for (const conversation of current.conversations) {
+    const old = previousConversationMap.get(conversation.conversationId);
+    const messagesById = new Map(
+      asArray(old?.messages)
+        .filter((message) => typeof message?.messageId === "string")
+        .map((message) => [message.messageId, message]),
+    );
+    for (const message of asArray(conversation.messages)) {
+      messagesById.set(message.messageId, message);
+      latestMessageIds.add(message.messageId);
+    }
+    conversationsById.set(conversation.conversationId, {
+      ...conversation,
+      messages: [...messagesById.values()].sort(
+        (left, right) =>
+          String(left.createdAt).localeCompare(String(right.createdAt)) ||
+          String(left.messageId).localeCompare(String(right.messageId)),
+      ),
+    });
+  }
+  const conversations = [...conversationsById.values()].sort(
+    (left, right) =>
+      String(left.createdAt).localeCompare(String(right.createdAt)) ||
+      String(left.conversationId).localeCompare(String(right.conversationId)),
+  );
+
+  const latestMediaIds = new Set(current.media.map((entry) => entry.identity));
+  const mediaById = new Map(
+    previousMedia
+      .filter((entry) => typeof entry?.identity === "string")
+      .map((entry) => [entry.identity, entry]),
+  );
+  current.media.forEach((entry) => mediaById.set(entry.identity, entry));
+  const media = [...mediaById.values()].sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  );
+
+  const postState = {};
+  for (const post of posts) {
+    postState[post.feedItemId] = stateFor(
+      previousArchive.posts,
+      post.feedItemId,
+      capturedAt,
+      latestPostIds.has(post.feedItemId),
+      previousPostIds.has(post.feedItemId) ? previousCapturedAt : null,
+    );
+  }
+  const conversationState = {};
+  const messageState = {};
+  for (const conversation of conversations) {
+    conversationState[conversation.conversationId] = stateFor(
+      previousArchive.conversations,
+      conversation.conversationId,
+      capturedAt,
+      latestConversationIds.has(conversation.conversationId),
+      previousConversationMap.has(conversation.conversationId)
+        ? previousCapturedAt
+        : null,
+    );
+    for (const message of asArray(conversation.messages)) {
+      messageState[message.messageId] = stateFor(
+        previousArchive.messages,
+        message.messageId,
+        capturedAt,
+        latestMessageIds.has(message.messageId),
+        previousMessageIds.has(message.messageId) ? previousCapturedAt : null,
+      );
+    }
+  }
+  const mediaState = {};
+  for (const entry of media) {
+    mediaState[entry.identity] = stateFor(
+      previousArchive.media,
+      entry.identity,
+      capturedAt,
+      latestMediaIds.has(entry.identity),
+      previousMedia.some((candidate) => candidate?.identity === entry.identity)
+        ? previousCapturedAt
+        : null,
+    );
+  }
+  const stateMaps = {
+    posts: postState,
+    conversations: conversationState,
+    messages: messageState,
+    media: mediaState,
+  };
+  const summary = {
+    ...current.summary,
+    manifestSchemaVersion: 3,
+    archive: {
+      stateMaps,
+      counts: Object.fromEntries(
+        Object.entries(stateMaps).map(([key, value]) => [key, stateCounts(value)]),
+      ),
+      dateRange: {
+        oldest:
+          [
+            ...posts.map((post) => post?.createdDate),
+            ...conversations.flatMap((conversation) =>
+              asArray(conversation?.messages).map((message) => message?.createdAt),
+            ),
+          ]
+            .filter(Boolean)
+            .sort()
+            .at(0) ?? null,
+        newest:
+          [
+            ...posts.map((post) => post?.createdDate),
+            ...conversations.flatMap((conversation) =>
+              asArray(conversation?.messages).map((message) => message?.createdAt),
+            ),
+          ]
+            .filter(Boolean)
+            .sort()
+            .at(-1) ?? null,
+      },
+    },
+  };
+  const postDates = posts.map((post) => post?.createdDate).filter(Boolean).sort();
+  const mergedMessageDates = conversations
+    .flatMap((conversation) =>
+      asArray(conversation?.messages).map((message) => message?.createdAt),
+    )
+    .filter(Boolean)
+    .sort();
+  summary.home.posts = posts.length;
+  summary.home.oldestPost = postDates.at(0) ?? null;
+  summary.home.newestPost = postDates.at(-1) ?? null;
+  summary.messages.conversations = conversations.length;
+  summary.messages.messages = conversations.reduce(
+    (total, conversation) => total + asArray(conversation.messages).length,
+    0,
+  );
+  summary.messages.oldestMessage = mergedMessageDates.at(0) ?? null;
+  summary.messages.newestMessage = mergedMessageDates.at(-1) ?? null;
+  summary.media.total = media.length;
+  return { ...current, posts, conversations, media, summary };
 }
 
 function messageAttachmentMedia({
@@ -649,8 +941,16 @@ export function transformCapture(capture) {
   );
   const dates = posts.map((post) => post.createdDate).filter(Boolean);
   const messageDates = allMessages.map((message) => message.createdAt).filter(Boolean);
+  assert(
+    unsupported.length === 0,
+    `Recognized content attachment coverage failed: ${unsupported
+      .map((item) => `${item.ownerType}:${item.ownerId}:${item.reason}`)
+      .join(", ")}`,
+  );
+  const excludedUiAssets = countExcludedUiAssets(posts, conversations);
   const summary = {
     schemaVersion: 2,
+    manifestSchemaVersion: 3,
     capturedAt: capture.capturedAt ?? null,
     captureStartedAt: capture.captureStartedAt ?? null,
     pageUrl: capture.pageUrl ?? null,
@@ -727,6 +1027,8 @@ export function transformCapture(capture) {
       homeFiles: media.filter(
         (entry) => entry.sourceType === "home" && entry.kind === "file",
       ).length,
+      invoicePdfs: media.filter((entry) => entry.role === "invoice-pdf").length,
+      videoPosters: media.filter((entry) => entry.role === "video-poster").length,
       messageImages: media.filter(
         (entry) => entry.sourceType === "message" && entry.kind === "image",
       ).length,
@@ -735,6 +1037,9 @@ export function transformCapture(capture) {
       ).length,
       unsupported: unsupported.length,
       unsupportedItems: unsupported,
+      excludedUiAssets,
+      excludedUiAssetPolicy:
+        "avatars, profile images, liker and reader images, and redundant image derivatives",
     },
     validation: {
       captureCompleteness: "passed",
@@ -805,7 +1110,49 @@ function credentialMarkerFiles(outputRoot) {
   return matches;
 }
 
-export function buildExport(capturePath, outputRoot) {
+function loadPreviousExport(previousRoot) {
+  if (!previousRoot) return null;
+  const canonicalPreviousRoot = canonicalExportRoot(previousRoot);
+  const required = [
+    "metadata/posts.json",
+    "metadata/conversations.json",
+    "metadata/media.json",
+    "metadata/export-summary.json",
+  ];
+  if (
+    !required.every((relativePath) =>
+      fs.existsSync(path.join(canonicalPreviousRoot, relativePath)),
+    )
+  ) {
+    return null;
+  }
+  const readJson = (relativePath) => {
+    const target = path.join(canonicalPreviousRoot, relativePath);
+    inspectPrivatePath(canonicalPreviousRoot, target, { expectedType: "file" });
+    return JSON.parse(fs.readFileSync(target, "utf8"));
+  };
+  const previous = {
+    posts: readJson(required[0]),
+    conversations: readJson(required[1]),
+    media: readJson(required[2]),
+    summary: readJson(required[3]),
+  };
+  assert(Array.isArray(previous.posts), "Previous posts.json must be an array");
+  assert(
+    Array.isArray(previous.conversations),
+    "Previous conversations.json must be an array",
+  );
+  assert(Array.isArray(previous.media), "Previous media.json must be an array");
+  assert(
+    previous.summary &&
+      typeof previous.summary === "object" &&
+      !Array.isArray(previous.summary),
+    "Previous export-summary.json must be an object",
+  );
+  return previous;
+}
+
+export function buildExport(capturePath, outputRoot, { previousRoot = null } = {}) {
   const canonicalRoot = canonicalExportRoot(outputRoot);
   hardenPrivateTrees(canonicalRoot);
   const inspectedCapture = inspectPrivatePath(
@@ -814,7 +1161,10 @@ export function buildExport(capturePath, outputRoot) {
     { expectedType: "file" },
   );
   const capture = JSON.parse(fs.readFileSync(inspectedCapture.path, "utf8"));
-  const result = transformCapture(capture);
+  const result = mergeHistoricalExport(
+    transformCapture(capture),
+    loadPreviousExport(previousRoot),
+  );
   const metadataRoot = ensurePrivateDirectory(
     canonicalRoot,
     path.join(canonicalRoot, "metadata"),

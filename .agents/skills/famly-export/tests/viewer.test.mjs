@@ -10,9 +10,11 @@ import {
   consumeAccessToken,
   indexMedia,
   loadManifests,
+  matchesTimelineEntry,
   messageDisclosureState,
   mediaIdentity,
   privateRoutePrefix,
+  nextTimelineBatch,
   renderInlineVideo,
   safeExternalUrl,
   safeLocalMediaHref,
@@ -387,4 +389,60 @@ test("only messages with image or video media start expanded", () => {
     ]),
     { open: false, label: "Text message" },
   );
+});
+
+test("filters use inclusive dates, history state, media kinds, and AND-token search", () => {
+  const posts = [
+    {
+      feedItemId: "post-1",
+      createdDate: "2026-01-03T10:00:00Z",
+      body: "Café observation",
+      sender: { title: "Zoë" },
+      comments: [{ commentId: "comment-1", body: "Blue room" }],
+    },
+  ];
+  const archive = {
+    stateMaps: {
+      posts: {
+        "post-1": { presentInLatest: false },
+      },
+    },
+  };
+  const [entry] = buildTimeline(posts, [], archive);
+  const media = mediaEntry({
+    filename: "Daily Report.pdf",
+    kind: "file",
+    expectedMime: "application/pdf",
+    relativePath: "files/2026/Daily Report.pdf",
+  });
+  const mediaIndex = indexMedia([media]);
+  const base = {
+    home: true,
+    messages: true,
+    dateFrom: "2026-01-03",
+    dateTo: "2026-01-03",
+    historyState: "preserved",
+    query: "cafe blue report",
+    file: true,
+  };
+  assert.equal(matchesTimelineEntry(entry, base, mediaIndex), true);
+  assert.equal(
+    matchesTimelineEntry(entry, { ...base, query: "cafe missing" }, mediaIndex),
+    false,
+  );
+  assert.equal(
+    matchesTimelineEntry(entry, { ...base, historyState: "current" }, mediaIndex),
+    false,
+  );
+  assert.equal(
+    matchesTimelineEntry(entry, { ...base, dateFrom: "2026-01-04" }, mediaIndex),
+    false,
+  );
+});
+
+test("progressive rendering batches at exactly 100 entries", () => {
+  const entries = Array.from({ length: 205 }, (_, index) => index);
+  assert.equal(nextTimelineBatch(entries, 0).length, 100);
+  assert.equal(nextTimelineBatch(entries, 100).length, 100);
+  assert.deepEqual(nextTimelineBatch(entries, 200), [200, 201, 202, 203, 204]);
 });
