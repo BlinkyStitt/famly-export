@@ -57,8 +57,8 @@ Run:
 ./famly-export
 ```
 
-A dedicated Chrome window opens. Sign in to Famly yourself if needed, open
-**Home**, return to Terminal, and press **Return**.
+A dedicated Chrome window opens. You will probably have to allow remote control of the window.
+Sign in to Famly yourself if needed, open **Home**, return to Terminal, and press **Return**.
 
 The exporter then:
 
