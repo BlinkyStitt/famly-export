@@ -1,134 +1,165 @@
 # Famly Export
 
-`famly-export` creates a private, verifiable offline backup of Famly Home and
-Messages on macOS. It keeps the original JSON shapes, original attachments,
-historical records that disappear from later refreshes, checksums, and a
-filterable authenticated viewer.
+The [Famly app](https://app.famly.co/) can contain years of school posts,
+observations, messages, photos, videos, and documents. This project is for
+families who want to download their own copy for safekeeping.
 
-The export can contain sensitive information about children and families. Keep
-the repository and generated backup private. Generated data is ignored by Git.
+`famly-export` uses an AI agent and a dedicated browser profile to make a
+private, verifiable offline backup of Famly Home and Messages on macOS. It saves
+the original attachments, keeps records that disappear from later refreshes,
+checks that the download is complete, and opens everything in a searchable
+viewer.
 
-> **Messages warning:** the export opens every active and archived
-> conversation. Famly may mark unread conversations as read. The exporter
-> records the initial unread count but cannot restore unread state.
+This is an independent community project, not an official Famly product.
 
-## Setup once
+> **A note on privacy:** This download is for your family's private backup. It
+> will include group photos with other people's children, along with names,
+> conversations, observations, invoices, and other sensitive information. Be
+> thoughtful about where you put the data. Do not publish the backup or share
+> photos containing other people's children without their permission.
 
-From this repository:
+> **Do not give the AI your password.** You sign in to Famly yourself in a
+> dedicated Chrome window. The exporter never asks for your password and does
+> not intentionally capture cookies, request headers, or access tokens. The
+> saved data does contain private records and temporary signed media URLs, so
+> do not share the generated files or repository directory publicly.
+
+## Credit
+
+This project grew out of
+[How to Download Your Photos from Famly with an AI Agent](https://docs.google.com/document/d/10_1RsFVVsqwLkbDy4xWT9g8zSkjzXb8nlRKLdK6sSlg/edit?pli=1&tab=t.0)
+by **Chris Cartland**, last updated July 24, 2026.
+
+Chris documented the important practical lessons behind this tool: saved Famly
+pages contain image links that expire, AI tools can miss content, Messages are
+harder to capture than Home, and a useful backup must download the real files
+and check the result. `famly-export` turns those lessons into one repeatable
+command.
+
+## What you need
+
+You need a Mac, a Famly account, and some comfort using Terminal. The setup is
+only required once:
 
 ```sh
 brew bundle
 codex login
 ```
 
-Homebrew installs Google Chrome, Codex, Node.js, and `jq`. Famly credentials are
-never requested by this tool.
+Homebrew installs Google Chrome, Codex, Node.js, and `jq`. `codex login` signs
+you in to Codex; it does not give Codex your Famly password.
 
-## Export
+## Make a backup
 
-Run the only supported operational command:
+Run:
 
 ```sh
 ./famly-export
 ```
 
-The command:
+A dedicated Chrome window opens. Sign in to Famly yourself if needed, open
+**Home**, return to Terminal, and press **Return**.
 
-1. checks tools, disk space, private ownership, and concurrent-run safety;
-2. installs or repairs the pinned, hardened `famly-chrome` integration;
-3. opens or reuses a visible Chrome window using a dedicated app profile under
-   the current user's home directory, never the ordinary Chrome profile;
-4. waits while you sign in to Famly yourself if needed and open **Home**;
-5. captures or resumes Home and complete active and archived Messages;
-6. preserves records no longer visible in the latest refresh;
-7. downloads or repairs missing media and verifies every attachment;
-8. publishes all manifests, media, checksums, and viewer files as one
-   recoverable transaction; and
-9. starts the authenticated viewer on `127.0.0.1:4173` and opens it.
+The exporter then:
 
-Press **Control-C** in Terminal to stop the managed viewer.
+1. scrolls through Home until it has reached the beginning of the available
+   history;
+2. captures posts, comments, observations, events, invoices, and their
+   attachments;
+3. opens active and archived Messages and follows each conversation to its
+   oldest available message;
+4. downloads every recognized photo, video, file, and invoice PDF;
+5. compares the captured pages, records, and attachments so missing content
+   causes a failure instead of a misleading "successful" backup;
+6. preserves older records that are no longer visible in the latest refresh;
+7. verifies the downloaded files with checksums; and
+8. opens the finished backup in a private local viewer.
 
-If capture, download, integrity validation, or publication fails, the command
-exits nonzero, reports the failed phase, leaves the previous authoritative
-export untouched, and does not open the viewer. Partial capture checkpoints are
-preserved for a retry. Once capture has completed, any later failure discards
-that completed checkpoint so the next run performs a fresh capture with fresh
-signed media URLs.
+Press **Control-C** in Terminal when you are finished to stop the viewer.
 
-## Scope
+> **Messages warning:** Opening Messages may cause Famly to mark unread
+> conversations as read. The exporter records the initial unread count, but it
+> cannot restore unread state.
 
-The export covers:
+## Why it does more than save the page
 
-- every Home post returned by the fully exhausted feed;
+Using **Save Page As…** can look successful while leaving you with a backup that
+stops working a few days later. Famly pages use temporary image and file URLs,
+so the actual attachments must be downloaded before those URLs expire.
+
+Famly also loads older material as you scroll. Home, archived conversations,
+message history, and reactions have separate completeness rules. The website
+can change, too. For those reasons, this project uses scripts to collect the
+data and then checks the output against what the browser observed. If a
+recognized attachment is unsupported, missing, corrupt, or cannot be
+downloaded, the export fails.
+
+A zero-entry media list also fails. In a real family account that almost always
+means the capture missed something.
+
+## What is included
+
+The backup covers:
+
+- every Home post returned after fully scrolling the feed;
 - comments, observations, events, invoices, likes, recipients, and captured
-  read metadata embedded in Home;
-- original post and comment images, MP4 videos, video poster frames, explicit
-  files, and invoice PDFs;
-- every active and archived conversation after exhausting list pagination;
-- every message through a terminal short history page, including exact
-  20-message multiples;
-- explicit Message images and files; and
-- explicit reaction evidence, including messages with zero reactions.
+  read information embedded in Home;
+- original post and comment images, MP4 videos, video poster frames, files, and
+  invoice PDFs;
+- active and archived conversation lists;
+- every captured message through the oldest available history page;
+- Message images and files; and
+- reaction evidence, including messages with no reactions.
+
+The backup deliberately excludes avatars, profile pictures, liker and reader
+profile images, and redundant image sizes. Those are counted as excluded
+interface assets rather than silently ignored.
 
 Dedicated Calendar, Documents, Attendance, Profiles, and other areas outside
-Home and Messages are not exported. Ordinary links in bodies remain links.
-Avatars, profile imagery, liker/reader images, and redundant image derivatives
-are deliberately excluded and counted as excluded UI assets.
+Home and Messages are not included. Ordinary links written inside posts or
+messages remain links.
 
-The exporter fails rather than silently omitting a recognized content
-attachment with an unsupported type, host, missing identifier, or failed
-download. A zero-entry media manifest also fails closed because it almost always
-indicates a capture regression.
+## If something goes wrong
 
-## Archival behavior
+The exporter reports the phase that failed and exits without publishing a
+partial replacement or opening the viewer. Your previous verified backup stays
+untouched.
 
-The capture format remains schema 2. The four authoritative manifests are:
+If capture stops partway through, a private checkpoint is kept for up to 24
+hours. The next run resumes from the latest safe point. If capture finished but
+a later download or verification step failed—often because a signed URL
+expired—the completed checkpoint is discarded so the next run fetches fresh
+URLs.
 
-```text
-metadata/posts.json
-metadata/conversations.json
-metadata/media.json
-metadata/export-summary.json
-```
+Running `./famly-export` again is the supported retry.
 
-Manifest schema 3 adds archive state maps and current, preserved, and total
-counts. A current record replaces the same post, conversation, message, or
-media identity. A record missing from a later refresh remains available and is
-labelled **Not seen in latest refresh**. If it reappears, it becomes current
-again. Earlier versions of an edited record are not retained.
+## The offline viewer
 
-The first successful run migrates an existing schema-2 export. Verified media
-is retained indefinitely, so storage grows over time.
+After a successful export, the viewer opens a newest-first timeline. You can:
 
-## Viewer
+- search names, text, comments, conversation titles, participants, attachment
+  names, event details, observation details, and invoice information;
+- filter Home and Messages, dates, conversations, media types, current or
+  preserved history, and favorites;
+- expand observations, events, invoices, likes, recipients, reactions, and
+  read information;
+- play videos and open original attachments; and
+- collect favorite images, videos, PDFs, and files into one ZIP.
 
-The viewer presents one newest-first timeline with:
+Records retained from an older capture are labelled **Not seen in latest
+refresh**. They remain visible unless you filter them out.
 
-- case- and diacritic-insensitive AND-token search;
-- Home and Messages toggles;
-- inclusive start and end dates;
-- conversation, image, video, file, current/history, and favorites filters;
-- progressive 100-entry batches with automatic and keyboard-accessible loading;
-- expandable observation, event, invoice, like, recipient, reaction, and read
-  metadata;
-- native MP4 controls, metadata preload, poster frames, byte-range seeking, and
-  original-file links; and
-- favorites for every real attachment, including images, videos, PDFs, invoice
-  PDFs, and other supported files.
+Favorites ZIP files are ordinary unencrypted archives. They may contain photos
+of other people's children and the same private information as the main backup.
+Store and share them with the same care.
 
-Generated video posters are not attachments and cannot be favorited. Favorites
-export once into one flat collision-safe ZIP.
+The viewer runs only on your Mac at `127.0.0.1:4173`. It requires a fresh
+private token, removes that token from browser history, and does not expose
+signed Famly URLs in its responses.
 
-> Favorites ZIPs are conventional unencrypted archives. The browser controls
-> the destination and its permissions.
+## Where the backup is stored
 
-The viewer binds only to loopback, enforces an exact Host header, and requires a
-fresh 256-bit fragment token. The token is sent to macOS through standard input,
-never argv, environment variables, cookies, or files. It is moved to
-`sessionStorage` and removed from browser history. Signed media URLs are omitted
-from viewer responses.
-
-## Private output
+The generated data stays inside this repository and is ignored by Git:
 
 ```text
 metadata/
@@ -148,16 +179,19 @@ messages/
 └── attachments/
 ```
 
-Directories are mode `0700`; files are mode `0600`. Media URLs are approved
-HTTPS Famly hosts only and are passed to `curl` through standard input. The
-exact killswitch URL is blocked both by the browser integration and the page
-capture hook and is never loaded.
+Directories are readable only by your macOS user (`0700`), and files are
+owner-only (`0600`). Ignored does not mean encrypted: do not use `git add -f`,
+do not make the repository public with generated files included, and do not
+upload the whole directory to a public file-sharing service.
+
+Verified media and historical records are retained across refreshes, so the
+backup grows over time. A newer record with the same Famly identifier replaces
+the older version; separate revisions of edited records are not kept.
 
 ## Advanced troubleshooting and development
 
-The root command is the supported interface. The scripts under
-`.agents/skills/famly-export/scripts/` are internal phases used for development
-and diagnosis.
+`./famly-export` is the supported command. The scripts under
+`.agents/skills/famly-export/scripts/` are internal implementation phases.
 
 Useful read-only checks:
 
@@ -167,26 +201,26 @@ lsof -nP -iTCP:9223 -sTCP:LISTEN
 lsof -nP -iTCP:4173 -sTCP:LISTEN
 ```
 
-The MCP entry must use `chrome-devtools-mcp@1.6.0`, the loopback browser URL,
-header redaction, telemetry/CrUX exclusions, disabled network/performance
-categories, the exact blocked URL, update-check exclusion, and 30/120-second
-runtime timeouts. `./famly-export` repairs drift automatically.
+The exporter installs or repairs its own pinned, hardened `famly-chrome`
+configuration. It uses a dedicated browser profile at:
 
-Checkpoints live in current-user `famly-capture-*` directories under the macOS
-temporary directory and expire after 24 hours. Publication uses a private
-transaction journal; the next run deterministically restores an interrupted
-publication before doing new work.
+```text
+${HOME}/Library/Application Support/Famly Export Chrome
+```
 
-Run the complete suite:
+It never attaches to your ordinary Chrome profile.
+
+Run the complete local test suite:
 
 ```sh
 node --test .agents/skills/famly-export/tests/*.test.mjs
 bash -n .agents/skills/famly-export/scripts/download-media.sh
 bash -n .agents/skills/famly-export/scripts/launch-famly-chrome.sh
+node --check .agents/skills/famly-export/scripts/run-export.mjs
 ```
 
-Set `FAMLY_REAL_CHROME_E2E=1` on macOS to include the real-Chrome fixture.
-Tests and fixtures contain no private export records or credentials.
+Set `FAMLY_REAL_CHROME_E2E=1` on macOS to include the real-Chrome fixture. Tests
+and fixtures contain no private export records or credentials.
 
 ## License
 
