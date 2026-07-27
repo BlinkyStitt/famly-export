@@ -288,6 +288,10 @@ and cross-origin archive requests are denied.
 The server uses no cookies or CORS and sends restrictive CSP, frame, referrer,
 permissions, opener, resource, cache, and MIME-sniffing headers.
 
+Manifest-listed MP4 videos play inline with the browser's native controls,
+metadata-only preload, and byte-range seeking. Each player also retains a link
+to the untouched original video file.
+
 Favorites export stages hard links to originals in one flat
 `Famly Favorites/` directory, uses `ditto --norsrc`, issues a one-time
 192-bit URL, and cleans on download, expiry, signal, or a later startup after

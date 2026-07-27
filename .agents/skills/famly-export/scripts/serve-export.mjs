@@ -196,19 +196,83 @@ function sendError(response, statusCode, message) {
   sendJson(response, statusCode, { error: message });
 }
 
-function streamFile(request, response, target, contentType, extraHeaders = {}) {
+function parseSingleByteRange(rangeHeader, size) {
+  if (typeof rangeHeader !== "string") {
+    return null;
+  }
+  const match = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || (!match[1] && !match[2]) || size === 0) {
+    return false;
+  }
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      return false;
+    }
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < start ||
+      start >= size
+    ) {
+      return false;
+    }
+    end = Math.min(end, size - 1);
+  }
+  return { start, end };
+}
+
+function streamFile(
+  request,
+  response,
+  target,
+  contentType,
+  extraHeaders = {},
+  { allowRanges = false } = {},
+) {
   const { path: filePath, stat } = target;
-  response.writeHead(200, {
+  const responseHeaders = {
     "Content-Type": contentType,
     "Content-Length": stat.size,
     ...extraHeaders,
-  });
+  };
+  let statusCode = 200;
+  let streamOptions = undefined;
+  if (allowRanges) {
+    responseHeaders["Accept-Ranges"] = "bytes";
+    const range = parseSingleByteRange(request.headers.range, stat.size);
+    if (range === false) {
+      response.writeHead(416, {
+        ...responseHeaders,
+        "Content-Length": 0,
+        "Content-Range": `bytes */${stat.size}`,
+      });
+      response.end();
+      return Promise.resolve();
+    }
+    if (range) {
+      statusCode = 206;
+      streamOptions = range;
+      responseHeaders["Content-Length"] = range.end - range.start + 1;
+      responseHeaders["Content-Range"] =
+        `bytes ${range.start}-${range.end}/${stat.size}`;
+    }
+  }
+  response.writeHead(statusCode, responseHeaders);
   if (request.method === "HEAD") {
     response.end();
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    pipeline(fs.createReadStream(filePath), response, (error) => {
+    pipeline(fs.createReadStream(filePath, streamOptions), response, (error) => {
       if (error) {
         reject(error);
       } else {
@@ -509,6 +573,8 @@ export function createExportServer({
             mediaEntry.expectedMime ||
               MIME_TYPES.get(path.extname(mediaEntry.relativePath).toLowerCase()) ||
               "application/octet-stream",
+            {},
+            { allowRanges: mediaEntry.kind === "video" },
           );
           return;
         }

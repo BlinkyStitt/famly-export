@@ -207,6 +207,10 @@ absolute-form requests, retain loopback binding, no CORS, traversal rejection,
 realpath containment, and same-origin archive checks. The viewer `media.json`
 response must omit `sourceUrl`.
 
+Render manifest-listed MP4 videos inline through the browser's native controls
+with metadata-only preload, inline playback, byte-range seeking, and a link to
+the untouched original video.
+
 Favorites ZIPs use an additional 192-bit one-time token, `0700` directories,
 `0600` ZIPs, expiry, signal cleanup, and startup deletion of current-user
 `famly-favorites-*` remnants older than one hour. Archive URLs must match the

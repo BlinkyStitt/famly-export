@@ -76,6 +76,11 @@
       gap: .75rem;
       grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
     }
+    .video-grid {
+      display: grid;
+      gap: .75rem;
+      margin-top: .75rem;
+    }
     .image-card {
       border: 2px solid transparent;
       border-radius: .6rem;
@@ -107,6 +112,18 @@
       justify-content: space-between;
       padding: .45rem;
     }
+    .video-card {
+      margin: 0;
+      overflow: hidden;
+    }
+    .video-card video {
+      background: #000;
+      display: block;
+      height: auto;
+      max-height: 72vh;
+      width: 100%;
+    }
+    .video-actions { padding-top: .45rem; }
     .favorite-button {
       background: transparent;
       border: 1px solid var(--border);

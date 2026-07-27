@@ -12,6 +12,7 @@ import {
   loadManifests,
   mediaIdentity,
   privateRoutePrefix,
+  renderInlineVideo,
   safeExternalUrl,
   safeLocalMediaHref,
 } from "../scripts/viewer-app.mjs";
@@ -36,6 +37,28 @@ function mediaEntry(overrides = {}) {
   entry.identity = mediaIdentity(entry);
   return entry;
 }
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.attributes = new Map();
+    this.className = "";
+    this.textContent = "";
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+}
+
+const fakeDocument = {
+  createElement: (tagName) => new FakeElement(tagName),
+};
 
 test("timeline mixes posts and messages newest-first with deterministic ties", () => {
   const posts = [
@@ -270,4 +293,37 @@ test("browser rendering uses original lazy images and accessible favorite contro
     source,
     /\.(?:innerHTML|outerHTML)\s*=|insertAdjacentHTML|document\.write/,
   );
+});
+
+test("videos render inline with native browser controls and an original link", () => {
+  const entry = mediaEntry({
+    mediaId: "video-1",
+    kind: "video",
+    expectedMime: "video/mp4",
+    relativePath: "videos/2026/original video.mp4",
+    filename: "original video.mp4",
+  });
+  const figure = renderInlineVideo(fakeDocument, entry, ACCESS_PREFIX);
+  assert.equal(figure.tagName, "figure");
+  assert.equal(figure.className, "video-card");
+  assert.equal(figure.children.length, 2);
+
+  const [video, caption] = figure.children;
+  assert.equal(video.tagName, "video");
+  assert.equal(
+    video.src,
+    `${ACCESS_PREFIX}/videos/2026/original%20video.mp4`,
+  );
+  assert.equal(video.controls, true);
+  assert.equal(video.preload, "metadata");
+  assert.equal(video.playsInline, true);
+  assert.equal(video.attributes.get("aria-label"), "original video.mp4");
+
+  assert.equal(caption.tagName, "figcaption");
+  assert.equal(caption.className, "video-actions");
+  assert.equal(caption.children[0].tagName, "a");
+  assert.equal(caption.children[0].textContent, "Open original video");
+  assert.equal(caption.children[0].href, video.src);
+  assert.equal(renderInlineVideo(fakeDocument, mediaEntry(), ACCESS_PREFIX), null);
+  assert.equal(renderInlineVideo(fakeDocument, entry, "/_private/wrong"), null);
 });

@@ -257,6 +257,70 @@ test("server rotates launch tokens without changing the viewer origin", async ()
   }
 });
 
+test("manifest-listed videos support native browser byte ranges", async () => {
+  const fixture = fixtureRoot();
+  const video = fixtureEntry({
+    mediaId: "home-video",
+    kind: "video",
+    expectedMime: "video/mp4",
+    relativePath: "videos/2026/video.mp4",
+    filename: "video.mp4",
+  });
+  const entries = [...fixture.entries, video];
+  fs.writeFileSync(
+    path.join(fixture.root, "metadata", "media.json"),
+    `${JSON.stringify(entries)}\n`,
+  );
+  fs.mkdirSync(path.join(fixture.root, "videos", "2026"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(fixture.root, video.relativePath),
+    "0123456789",
+  );
+  const server = createExportServer({
+    root: fixture.root,
+    temporaryRoot: fixture.temporaryRoot,
+    port: 0,
+  });
+  const address = await server.listen();
+  const requestPath = `${server.privatePrefix()}/${video.relativePath}`;
+  try {
+    const partial = await requestRaw({
+      port: address.port,
+      requestPath,
+      headers: { Range: "bytes=2-5" },
+    });
+    assert.equal(partial.status, 206);
+    assert.equal(partial.headers["content-type"], "video/mp4");
+    assert.equal(partial.headers["accept-ranges"], "bytes");
+    assert.equal(partial.headers["content-range"], "bytes 2-5/10");
+    assert.equal(partial.headers["content-length"], "4");
+    assert.equal(partial.body.toString(), "2345");
+
+    const suffix = await requestRaw({
+      port: address.port,
+      requestPath,
+      headers: { Range: "bytes=-3" },
+    });
+    assert.equal(suffix.status, 206);
+    assert.equal(suffix.headers["content-range"], "bytes 7-9/10");
+    assert.equal(suffix.body.toString(), "789");
+
+    const invalid = await requestRaw({
+      port: address.port,
+      requestPath,
+      headers: { Range: "bytes=10-20" },
+    });
+    assert.equal(invalid.status, 416);
+    assert.equal(invalid.headers["content-range"], "bytes */10");
+    assert.equal(invalid.body.length, 0);
+  } finally {
+    await server.close();
+    cleanupFixture(fixture);
+  }
+});
+
 test("archive API rejects cross-origin, oversized, invalid, and concurrent requests", async (t) => {
   let releaseZip;
   let markZipStarted;

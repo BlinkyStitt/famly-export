@@ -512,6 +512,36 @@ function renderFavoriteImage(
   return figure;
 }
 
+export function renderInlineVideo(documentObject, entry, accessPrefix) {
+  if (entry?.kind !== "video") {
+    return null;
+  }
+  const href = safeLocalMediaHref(entry, accessPrefix);
+  if (!href) {
+    return null;
+  }
+  const filename = entry.filename || "Famly video";
+  const figure = element(documentObject, "figure", "video-card");
+  const video = element(documentObject, "video");
+  video.src = href;
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.setAttribute("aria-label", filename);
+
+  const caption = element(documentObject, "figcaption", "video-actions");
+  const originalLink = element(
+    documentObject,
+    "a",
+    null,
+    "Open original video",
+  );
+  originalLink.href = href;
+  caption.append(originalLink);
+  figure.append(video, caption);
+  return figure;
+}
+
 function renderAttachments(
   documentObject,
   entries,
@@ -530,8 +560,10 @@ function renderAttachments(
   }
   const container = element(documentObject, "div", "attachments");
   const imageGrid = element(documentObject, "div", "image-grid");
+  const videoGrid = element(documentObject, "div", "video-grid");
   const fileList = element(documentObject, "ul", "file-list");
   let images = 0;
+  let videos = 0;
   let files = 0;
   for (const { entry, href } of supported) {
     if (entry.kind === "image") {
@@ -545,6 +577,12 @@ function renderAttachments(
       if (image) {
         imageGrid.append(image);
         images += 1;
+      }
+    } else if (entry.kind === "video") {
+      const video = renderInlineVideo(documentObject, entry, accessPrefix);
+      if (video) {
+        videoGrid.append(video);
+        videos += 1;
       }
     } else {
       const item = element(documentObject, "li");
@@ -563,10 +601,13 @@ function renderAttachments(
   if (images > 0) {
     container.append(imageGrid);
   }
+  if (videos > 0) {
+    container.append(videoGrid);
+  }
   if (files > 0) {
     container.append(fileList);
   }
-  return images + files > 0 ? container : null;
+  return images + videos + files > 0 ? container : null;
 }
 
 function renderComment(
