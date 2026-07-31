@@ -55,7 +55,8 @@ as CI coverage.
 
 ## Troubleshooting
 
-These read-only checks show the installed MCP configuration and local
+Run the MCP check from the repository. It shows the tracked project
+configuration and the local
 listeners:
 
 ```sh
@@ -64,9 +65,11 @@ lsof -nP -iTCP:9223 -sTCP:LISTEN
 lsof -nP -iTCP:4173 -sTCP:LISTEN
 ```
 
-The exporter installs or repairs its own pinned, hardened `famly-chrome`
-configuration. When diagnosing a failure, report the exact failed phase and
-preserve the previous verified export and any valid partial capture checkpoint.
+The pinned, hardened `famly-chrome` configuration lives only in the tracked
+`.codex/config.toml`. The exporter validates that file and never installs or
+modifies a user-level MCP entry. When diagnosing a failure, report the exact
+failed phase and preserve the previous verified export and any valid partial
+capture checkpoint.
 
 ## Before committing
 

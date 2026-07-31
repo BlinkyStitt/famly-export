@@ -10,6 +10,8 @@
   scripts as alternate workflows or subcommands.
 - Preserve the isolated `famly-chrome` profile boundary. Never attach the
   exporter to the user's ordinary Chrome profile.
+- Keep `famly-chrome` in the tracked project `.codex/config.toml`. Never add,
+  repair, or mutate an MCP entry in the user's `~/.codex/config.toml`.
 - Before changing capture, security, completeness, publication, or viewer
   behavior, read `.agents/skills/famly-export/SKILL.md` and every directly
   referenced instruction file required for that change.

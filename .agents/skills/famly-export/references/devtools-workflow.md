@@ -28,8 +28,9 @@ Require `chrome-devtools-mcp@1.6.0`,
 `--no-category-network`, `--no-category-performance`, the exact
 `--blockedUrlPattern=https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch`,
 and `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. Reject `--autoConnect` and
-`--allowUnrestrictedPaths`. If any item is wrong, stop before capture, replace
-the entry as documented in `README.md`, and restart Codex.
+`--allowUnrestrictedPaths`. If any item is wrong, stop before capture and
+restore the tracked `.codex/config.toml`. Never install or repair a user-level
+`famly-chrome` entry.
 
 ## 2. Select the authenticated Home tab
 

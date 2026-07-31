@@ -14,11 +14,12 @@ import {
   obsoleteViewerPaths,
   openViewerFromStdin,
   publishStagedExport,
-  replaceMcpTomlSection,
   selectResumableCheckpoint,
   seedVerifiedMedia,
   stopManagedViewer,
+  validateActiveMcpConfiguration,
   validateExistingChromeListener,
+  validateProjectMcpConfiguration,
 } from "../scripts/run-export.mjs";
 import {
   prepareCapture,
@@ -30,30 +31,83 @@ function privateFile(target, value) {
   fs.writeFileSync(target, value, { mode: 0o600 });
 }
 
-test("profile path follows the current user's home and MCP configuration is exact", () => {
+test("profile path follows the current user's home", () => {
   assert.equal(
     chromeProfilePath("/Users/example"),
     "/Users/example/Library/Application Support/Famly Export Chrome",
   );
-  const original = [
-    'model = "gpt-5"',
-    "[mcp_servers.famly-chrome]",
-    'command = "wrong"',
-    "[mcp_servers.famly-chrome.env]",
-    'OLD = "1"',
-    "[projects.test]",
-    'trust_level = "trusted"',
-    "",
+});
+
+test("tracked project config is the exact hardened MCP contract", () => {
+  const result = validateProjectMcpConfiguration();
+  assert.equal(result.contents, `${exactMcpTomlSection()}\n`);
+  assert.match(result.configPath, /\/\.codex\/config\.toml$/);
+  assert.ok(!result.contents.includes("--autoConnect"));
+  assert.ok(!result.contents.includes("--allowUnrestrictedPaths"));
+});
+
+test("modified project MCP config fails closed", () => {
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "famly-project-config-test-"),
+  );
+  const configPath = path.join(temporaryRoot, "config.toml");
+  try {
+    fs.writeFileSync(
+      configPath,
+      `${exactMcpTomlSection()}\nenabled = false\n`,
+    );
+    assert.throws(
+      () => validateProjectMcpConfiguration({ configPath }),
+      /missing or modified/,
+    );
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("effective MCP config must be active, exact, and hardened", () => {
+  const args = [
+    "-y",
+    "chrome-devtools-mcp@1.6.0",
+    "--browserUrl=http://127.0.0.1:9223",
+    "--redactNetworkHeaders",
+    "--no-usage-statistics",
+    "--no-performance-crux",
+    "--no-category-network",
+    "--no-category-performance",
+    "--blockedUrlPattern=https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch",
+  ].join(" ");
+  const stdout = [
+    "famly-chrome",
+    "  command: npx",
+    `  args: ${args}`,
+    "  env: CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=*****",
+    "  startup_timeout_sec: 30",
+    "  tool_timeout_sec: 120",
   ].join("\n");
-  const replaced = replaceMcpTomlSection(original);
-  assert.ok(replaced.includes(exactMcpTomlSection()));
-  assert.ok(replaced.includes("[projects.test]"));
-  assert.ok(!replaced.includes('command = "wrong"'));
-  assert.ok(!replaced.includes("OLD"));
-  assert.ok(replaced.includes("startup_timeout_sec = 30"));
-  assert.ok(replaced.includes("tool_timeout_sec = 120"));
-  assert.ok(!replaced.includes("--autoConnect"));
-  assert.ok(!replaced.includes("--allowUnrestrictedPaths"));
+  assert.equal(
+    validateActiveMcpConfiguration({
+      inspect: () => ({ status: 0, stdout }),
+    }),
+    stdout,
+  );
+  assert.throws(
+    () =>
+      validateActiveMcpConfiguration({
+        inspect: () => ({ status: 1, stdout: "" }),
+      }),
+    /choose to trust it/,
+  );
+  assert.throws(
+    () =>
+      validateActiveMcpConfiguration({
+        inspect: () => ({
+          status: 0,
+          stdout: `${stdout}\n  args: --allowUnrestrictedPaths`,
+        }),
+      }),
+    /unexpected famly-chrome/,
+  );
 });
 
 test("port reuse requires one exact dedicated Chrome process", () => {
@@ -210,6 +264,7 @@ test("structured capture failures report the exact phase and remain nonzero", as
         capturePath: path.join(os.tmpdir(), "famly-capture-test", "captured-export.json"),
         async run(_command, args, options) {
           const outputPath = args[args.indexOf("--output-last-message") + 1];
+          assert.equal(args.includes("-c"), false);
           fs.writeFileSync(
             outputPath,
             JSON.stringify({

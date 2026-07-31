@@ -34,6 +34,11 @@ const TRANSACTION_PREFIX = ".famly-export-transaction-";
 const VIEWER_PORT = 4173;
 const DEVTOOLS_PORT = 9223;
 const CAPTURE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+const PROJECT_MCP_CONFIG_PATH = path.join(
+  REPOSITORY_ROOT,
+  ".codex",
+  "config.toml",
+);
 const REQUIRED_COMMANDS = Object.freeze([
   "node",
   "codex",
@@ -195,10 +200,11 @@ export function acquireRunLock(root = REPOSITORY_ROOT) {
 }
 
 export function exactMcpTomlSection() {
+  const formattedArguments = JSON.stringify(MCP_ARGS).replaceAll('","', '", "');
   return [
     "[mcp_servers.famly-chrome]",
     'command = "npx"',
-    `args = ${JSON.stringify(MCP_ARGS)}`,
+    `args = ${formattedArguments}`,
     "startup_timeout_sec = 30",
     "tool_timeout_sec = 120",
     "",
@@ -207,49 +213,56 @@ export function exactMcpTomlSection() {
   ].join("\n");
 }
 
-export function replaceMcpTomlSection(contents) {
-  const lines = String(contents).split(/\r?\n/);
-  const output = [];
-  let skipping = false;
-  for (const line of lines) {
-    const table = line.match(/^\s*\[([^\]]+)\]\s*$/)?.[1];
-    if (table) {
-      if (
-        table === "mcp_servers.famly-chrome" ||
-        table.startsWith("mcp_servers.famly-chrome.")
-      ) {
-        skipping = true;
-        continue;
-      }
-      skipping = false;
-    }
-    if (!skipping) {
-      output.push(line);
-    }
-  }
-  while (output.length && output.at(-1) === "") {
-    output.pop();
-  }
-  return `${output.join("\n")}\n\n${exactMcpTomlSection()}\n`;
-}
-
-export function ensureMcpConfiguration({
-  configPath = path.join(os.homedir(), ".codex", "config.toml"),
+export function validateProjectMcpConfiguration({
+  configPath = PROJECT_MCP_CONFIG_PATH,
 } = {}) {
   const stat = fs.lstatSync(configPath);
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.uid !== process.getuid()) {
-    fail(`Codex configuration is not a current-user regular file: ${configPath}`);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    fail(`Project Codex configuration is not a regular file: ${configPath}`);
   }
-  const existing = fs.readFileSync(configPath, "utf8");
-  const desired = replaceMcpTomlSection(existing);
-  if (desired === existing) {
-    return false;
+  const actual = fs.readFileSync(configPath, "utf8");
+  const expected = `${exactMcpTomlSection()}\n`;
+  if (actual !== expected) {
+    fail(
+      "Project famly-chrome configuration is missing or modified; restore .codex/config.toml",
+    );
   }
-  const temporary = `${configPath}.famly-${crypto.randomBytes(8).toString("hex")}`;
-  fs.writeFileSync(temporary, desired, { flag: "wx", mode: PRIVATE_FILE_MODE });
-  fs.renameSync(temporary, configPath);
-  fs.chmodSync(configPath, PRIVATE_FILE_MODE);
-  return true;
+  return { configPath, contents: actual };
+}
+
+export function validateActiveMcpConfiguration({
+  inspect = () =>
+    spawnSync("codex", ["mcp", "get", "famly-chrome"], {
+      cwd: REPOSITORY_ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+} = {}) {
+  const result = inspect();
+  if (result.status !== 0) {
+    fail(
+      "Codex is not loading this repository's famly-chrome configuration. Run `codex` in this repository once, choose to trust it, exit with `/exit`, and retry ./famly-export",
+    );
+  }
+  const output = String(result.stdout);
+  const required = [
+    "famly-chrome",
+    "command: npx",
+    `args: ${MCP_ARGS.join(" ")}`,
+    "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=",
+    "startup_timeout_sec: 30",
+    "tool_timeout_sec: 120",
+  ];
+  if (
+    !required.every((value) => output.includes(value)) ||
+    output.includes("--autoConnect") ||
+    output.includes("--allowUnrestrictedPaths")
+  ) {
+    fail(
+      "Codex loaded an unexpected famly-chrome configuration; restore .codex/config.toml and remove any user-level entry with the same name",
+    );
+  }
+  return output;
 }
 
 function listenerPids(port) {
@@ -432,10 +445,6 @@ export async function invokeCodexCapture({
     schemaPath,
     "--output-last-message",
     resultPath,
-    "-c",
-    "mcp_servers.famly-chrome.startup_timeout_sec=30",
-    "-c",
-    "mcp_servers.famly-chrome.tool_timeout_sec=120",
     "-",
   ], { input: capturePrompt({ capturePath, resumePath }), signal });
   if (result.code !== 0) {
@@ -822,7 +831,8 @@ export async function main() {
     lock = acquireRunLock(root);
     phase = "preflight";
     preflight({ root });
-    ensureMcpConfiguration();
+    validateProjectMcpConfiguration();
+    validateActiveMcpConfiguration();
     phase = "browser startup";
     launchOrReuseChrome();
     await promptForSignIn(abortController.signal);

@@ -25,10 +25,12 @@ For an interactive export, use only:
 ./famly-export
 ```
 
-The runner owns dependency/disk checks, locking, portable profile selection,
-MCP configuration, Chrome startup/reuse, checkpoint selection, Codex capture,
+The tracked `.codex/config.toml` owns the project-scoped MCP configuration. The
+runner validates it and owns dependency/disk checks, locking, portable profile
+selection, Chrome startup/reuse, checkpoint selection, Codex capture,
 historical merge, download validation, transactional publication, and the
-managed viewer. Internal scripts are not user-facing subcommands.
+managed viewer. It never installs or modifies a user-level MCP entry. Internal
+scripts are not user-facing subcommands.
 
 If this skill is invoked by that runner through `codex exec`, perform only the
 browser-capture phase described below and return the exact JSON contract

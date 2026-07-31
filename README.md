@@ -38,16 +38,23 @@ command.
 
 ## What you need
 
-You need a Mac, a Famly account, and some comfort using Terminal. The setup is
-only required once:
+You need a Mac, a Famly account, and some comfort using Terminal. Clone the
+project, enter its directory, and run the one-time setup:
 
 ```sh
+git clone https://github.com/BlinkyStitt/famly-export.git
+cd famly-export
 brew bundle
 codex login
+codex
 ```
 
 Homebrew installs Google Chrome, Codex, Node.js, and `jq`. `codex login` signs
-you in to Codex; it does not give Codex your Famly password.
+you in to Codex; it does not give Codex your Famly password. The final `codex`
+command lets you trust this repository so Codex can load its project
+configuration; after choosing to trust it, enter `/exit`. The dedicated browser
+tool is configured only for this repository and is not installed in your
+user-wide Codex configuration.
 
 ## Make a backup
 

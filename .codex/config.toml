@@ -1,0 +1,8 @@
+[mcp_servers.famly-chrome]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@1.6.0", "--browserUrl=http://127.0.0.1:9223", "--redactNetworkHeaders", "--no-usage-statistics", "--no-performance-crux", "--no-category-network", "--no-category-performance", "--blockedUrlPattern=https://famly-killswitch.s3.eu-central-1.amazonaws.com/killswitch"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+[mcp_servers.famly-chrome.env]
+CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = "1"
